@@ -147,22 +147,36 @@ This:
 
 #### 4a. Pull, Tag, and Push the Docker Image
 
+**First, get your repository URL from Step 1 output.** It looks like:
+```
+mrpygxt-igb64472.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo
+```
+
+**Now run these 4 commands** (substituting YOUR repository URL):
+
 ```bash
-# Pull the pre-built image from GitHub Container Registry
+# 1. Pull the pre-built image from GitHub
 docker pull ghcr.io/azbarbarian2020/ftfp_v1:v1
 
-# Tag for your Snowflake registry (use the path from Step 1 output)
-# Format: <account>.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
+# 2. Tag it for YOUR Snowflake registry
+#    Add /ftfp_v1:v1 to the END of your repository URL
 docker tag ghcr.io/azbarbarian2020/ftfp_v1:v1 \
-  sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
+  mrpygxt-igb64472.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
 
-# Login to your Snowflake registry (just the host, not full path)
-docker login sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com
-# Username: Your Snowflake username
-# Password: Your Snowflake password
+# 3. Login to Snowflake registry (JUST the host part, before the first /)
+docker login mrpygxt-igb64472.registry.snowflakecomputing.com
+#    Username: Your Snowflake username
+#    Password: Your Snowflake password
 
-# Push the image
-docker push sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
+# 4. Push the image
+docker push mrpygxt-igb64472.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
+```
+
+**Breaking down the image path:**
+```
+mrpygxt-igb64472.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
+└─────────────── registry host ───────────────┘└──── repository path ────┘└─ image:tag ─┘
+        (use this for docker login)              (from Step 1 output)       (always add this)
 ```
 
 #### 4b. Deploy the Service
@@ -289,10 +303,11 @@ SHOW IMAGES IN IMAGE REPOSITORY FTFP_V1.IMAGES.FTFP_REPO;
 ### Docker Login Fails
 
 ```bash
-# Make sure you're logging into just the host
-docker login sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com
+# Login to JUST the registry host (everything before the first /)
+docker login mrpygxt-igb64472.registry.snowflakecomputing.com
 
-# NOT the full path with /ftfp_v1/images/ftfp_repo
+# NOT the full repository path:
+# WRONG: docker login mrpygxt-igb64472.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo
 ```
 
 ### ML Predictions Return NULL
