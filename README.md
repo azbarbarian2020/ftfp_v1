@@ -39,29 +39,70 @@ This creates:
 
 ### Step 2: Upload Seed Data & ML Models
 
-This step downloads files from GitHub to your computer, then uploads them to Snowflake.
+First, download the files to your computer, then upload them to Snowflake using **either** the CLI or the Snowsight UI.
 
-#### 2a. Download the repository to your local machine
+#### 2a. Download the repository
 
+**Option A - Git clone:**
 ```bash
 git clone https://github.com/azbarbarian2020/ftfp_v1.git
-cd ftfp_v1
 ```
 
-This creates a local `ftfp_v1/` folder with all the data files in `seed_data/`.
+**Option B - Download ZIP:**
+1. Go to https://github.com/azbarbarian2020/ftfp_v1
+2. Click green **Code** button → **Download ZIP**
+3. Extract the ZIP file
 
-#### 2b. Upload files from your computer to Snowflake stages
+The files you need are in the `seed_data/` folder.
+
+---
+
+#### 2b. Upload files to Snowflake
+
+Choose **ONE** of these methods:
+
+<details>
+<summary><b>📁 Option A: Snowsight UI (No CLI required)</b></summary>
+
+**Upload CSV files to SEED_STAGE:**
+1. In Snowsight, go to **Data** → **Databases** → **FTFP_V1** → **FTFP** → **Stages**
+2. Click on **SEED_STAGE**
+3. Click **+ Files** button (top right)
+4. Select these 4 files from your `seed_data/` folder:
+   - `NORMAL_SEED_FULL.csv.gz`
+   - `ENGINE_FAILURE_SEED.csv.gz`
+   - `TRANSMISSION_FAILURE_SEED.csv.gz`
+   - `ELECTRICAL_FAILURE_SEED.csv.gz`
+5. Click **Upload**
+
+**Upload ML model files to MODELS:**
+1. Go to **Data** → **Databases** → **FTFP_V1** → **ML** → **Stages**
+2. Click on **MODELS**
+3. Click **+ Files** button
+4. Select these 6 files from your `seed_data/` folder:
+   - `classifier_v1_0_0.pkl.gz`
+   - `regression_v1_0_0.pkl.gz`
+   - `regression_temporal_v1_1_0.pkl.gz`
+   - `label_mapping_v1_0_0.pkl.gz`
+   - `feature_columns_v1_0_0.pkl.gz`
+   - `feature_columns_temporal_v1_1_0.pkl.gz`
+5. Click **Upload**
+
+</details>
+
+<details>
+<summary><b>💻 Option B: Snowflake CLI</b></summary>
 
 Run these commands from inside the `ftfp_v1/` folder:
 
 ```bash
-# Upload seed data CSV files (to @FTFP_V1.FTFP.SEED_STAGE)
+# Upload seed data CSV files
 snow stage copy seed_data/NORMAL_SEED_FULL.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONNECTION
 snow stage copy seed_data/ENGINE_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONNECTION
 snow stage copy seed_data/TRANSMISSION_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONNECTION
 snow stage copy seed_data/ELECTRICAL_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONNECTION
 
-# Upload ML model files (to @FTFP_V1.ML.MODELS)
+# Upload ML model files
 snow stage copy seed_data/classifier_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
 snow stage copy seed_data/regression_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
 snow stage copy seed_data/regression_temporal_v1_1_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
@@ -70,13 +111,18 @@ snow stage copy seed_data/feature_columns_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --ove
 snow stage copy seed_data/feature_columns_temporal_v1_1_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
 ```
 
-> **Note:** Replace `YOUR_CONNECTION` with your Snowflake CLI connection name (run `snow connection list` to see available connections).
+> Replace `YOUR_CONNECTION` with your CLI connection name (run `snow connection list` to see options).
+
+</details>
+
+---
 
 #### 2c. Verify uploads
 
-```bash
-snow sql -q "LIST @FTFP_V1.FTFP.SEED_STAGE;" --connection YOUR_CONNECTION  # Should show 4 CSV files
-snow sql -q "LIST @FTFP_V1.ML.MODELS;" --connection YOUR_CONNECTION         # Should show 6 PKL files
+Run in a Snowflake worksheet:
+```sql
+LIST @FTFP_V1.FTFP.SEED_STAGE;  -- Should show 4 CSV files
+LIST @FTFP_V1.ML.MODELS;        -- Should show 6 PKL files
 ```
 
 ---
