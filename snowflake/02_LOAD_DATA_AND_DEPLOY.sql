@@ -66,13 +66,24 @@ SELECT 'ELECTRICAL_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM 
 SELECT '✅ Seed data loaded' AS STATUS;
 
 -- ============================================================================
--- STEP 3: CREATE ML UDFs
+-- STEP 3: UPLOAD ML MODELS AND CREATE UDFs
 -- ============================================================================
-SELECT '📦 Creating ML UDFs...' AS STATUS;
+SELECT '📦 Creating ML model stage and UDFs...' AS STATUS;
 
 USE SCHEMA ML;
 
--- Classification UDF - Rule-based failure detection
+-- Create stage for ML models
+CREATE STAGE IF NOT EXISTS MODELS DIRECTORY = (ENABLE = TRUE);
+
+SELECT '⚠️ Upload ML model files to @FTFP_V1.ML.MODELS before continuing' AS NOTE;
+SELECT 'Run: snow stage copy seed_data/<file>.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION' AS COMMAND;
+SELECT 'Files: classifier_v1_0_0.pkl.gz, regression_v1_0_0.pkl.gz, regression_temporal_v1_1_0.pkl.gz,' AS FILES;
+SELECT '       label_mapping_v1_0_0.pkl.gz, feature_columns_v1_0_0.pkl.gz, feature_columns_temporal_v1_1_0.pkl.gz' AS FILES2;
+
+-- Verify models are uploaded
+LIST @MODELS;
+
+-- Classification UDF - XGBoost classifier model
 CREATE OR REPLACE FUNCTION CLASSIFY_FAILURE_ML(
     AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
     STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
@@ -80,24 +91,30 @@ CREATE OR REPLACE FUNCTION CLASSIFY_FAILURE_ML(
     ROLLING_AVG_ENGINE_TEMP FLOAT, ROLLING_AVG_TRANS_OIL_PRESSURE FLOAT
 )
 RETURNS VARCHAR
-LANGUAGE SQL
-AS
-$$
-    CASE 
-        WHEN AVG_ENGINE_TEMP > 220 OR (AVG_ENGINE_TEMP > 200 AND SLOPE_ENGINE_TEMP > 0.5) 
-        THEN 'ENGINE_FAILURE'
-        WHEN AVG_TRANS_OIL_PRESSURE < 30 OR AVG_TRANS_OIL_PRESSURE > 60 
-             OR (AVG_TRANS_OIL_PRESSURE < 40 AND SLOPE_TRANS_OIL_PRESSURE < -0.3)
-        THEN 'TRANSMISSION_FAILURE'
-        WHEN AVG_BATTERY_VOLTAGE < 11.8 
-             OR (AVG_BATTERY_VOLTAGE < 12.2 AND SLOPE_BATTERY_VOLTAGE < -0.02)
-             OR (STDDEV_BATTERY_VOLTAGE > 0.5 AND AVG_BATTERY_VOLTAGE < 12.4)
-        THEN 'ELECTRICAL_FAILURE'
-        ELSE 'NORMAL'
-    END
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
+HANDLER = 'classify'
+IMPORTS = ('@FTFP_V1.ML.MODELS/classifier_v1_0_0.pkl.gz',
+           '@FTFP_V1.ML.MODELS/label_mapping_v1_0_0.pkl.gz',
+           '@FTFP_V1.ML.MODELS/feature_columns_v1_0_0.pkl.gz')
+AS $$
+import sys, joblib, numpy as np
+IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
+import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
+clf_model = joblib.load(import_dir + "classifier_v1_0_0.pkl.gz")
+label_info = joblib.load(import_dir + "label_mapping_v1_0_0.pkl.gz")
+reverse_label_mapping = label_info["reverse_mapping"]
+def classify(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure):
+    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure]])
+    if np.isnan(features).any(): return "NORMAL"
+    prediction = clf_model.predict(features)[0]
+    return reverse_label_mapping[int(prediction)]
 $$;
 
--- TTF Regression UDF
+SELECT '✅ CLASSIFY_FAILURE_ML created (XGBoost)' AS STATUS;
+
+-- TTF Regression UDF - XGBoost regression model (11 features)
 CREATE OR REPLACE FUNCTION PREDICT_TTF_ML(
     AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
     STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
@@ -105,24 +122,27 @@ CREATE OR REPLACE FUNCTION PREDICT_TTF_ML(
     ROLLING_AVG_ENGINE_TEMP FLOAT, ROLLING_AVG_TRANS_OIL_PRESSURE FLOAT
 )
 RETURNS FLOAT
-LANGUAGE SQL
-AS
-$$
-    CASE 
-        WHEN AVG_ENGINE_TEMP > 240 THEN GREATEST(0.5, (260 - AVG_ENGINE_TEMP) / 10)
-        WHEN AVG_ENGINE_TEMP > 220 THEN GREATEST(2, (240 - AVG_ENGINE_TEMP) / 5)
-        WHEN AVG_ENGINE_TEMP > 200 AND SLOPE_ENGINE_TEMP > 0.5 
-        THEN GREATEST(4, (220 - AVG_ENGINE_TEMP) / (SLOPE_ENGINE_TEMP * 60))
-        WHEN AVG_TRANS_OIL_PRESSURE < 25 THEN GREATEST(1, AVG_TRANS_OIL_PRESSURE / 10)
-        WHEN AVG_TRANS_OIL_PRESSURE > 65 THEN GREATEST(1, (80 - AVG_TRANS_OIL_PRESSURE) / 5)
-        WHEN AVG_TRANS_OIL_PRESSURE < 35 THEN GREATEST(3, (35 - AVG_TRANS_OIL_PRESSURE) / 3)
-        WHEN AVG_BATTERY_VOLTAGE < 11.0 THEN GREATEST(0.5, (AVG_BATTERY_VOLTAGE - 10) * 2)
-        WHEN AVG_BATTERY_VOLTAGE < 11.8 THEN GREATEST(2, (AVG_BATTERY_VOLTAGE - 10.5) * 4)
-        ELSE NULL
-    END
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
+HANDLER = 'predict_ttf'
+IMPORTS = ('@FTFP_V1.ML.MODELS/regression_v1_0_0.pkl.gz',
+           '@FTFP_V1.ML.MODELS/feature_columns_v1_0_0.pkl.gz')
+AS $$
+import sys, joblib, numpy as np
+IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
+import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
+reg_model = joblib.load(import_dir + "regression_v1_0_0.pkl.gz")
+def predict_ttf(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure):
+    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure]])
+    if np.isnan(features).any(): return None
+    prediction = reg_model.predict(features)[0]
+    return max(0.0, float(prediction))
 $$;
 
--- TTF Temporal UDF (enhanced with temporal features)
+SELECT '✅ PREDICT_TTF_ML created (XGBoost)' AS STATUS;
+
+-- TTF Temporal UDF - XGBoost regression model (16 temporal features)
 CREATE OR REPLACE FUNCTION PREDICT_TTF_TEMPORAL(
     AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
     STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
@@ -132,25 +152,26 @@ CREATE OR REPLACE FUNCTION PREDICT_TTF_TEMPORAL(
     TEMP_ACCELERATION FLOAT, PRESSURE_ACCELERATION FLOAT
 )
 RETURNS FLOAT
-LANGUAGE SQL
-AS
-$$
-    CASE 
-        WHEN AVG_BATTERY_VOLTAGE < 11.5 
-        THEN GREATEST(0.5, (AVG_BATTERY_VOLTAGE - 10) * 2 - (CUMULATIVE_VOLATILITY * 0.1))
-        WHEN AVG_BATTERY_VOLTAGE < 12.0 AND CUMULATIVE_VOLATILITY > 2
-        THEN GREATEST(1, (AVG_BATTERY_VOLTAGE - 10.5) * 3 - (ELEVATED_WINDOW_COUNT * 0.2))
-        WHEN AVG_BATTERY_VOLTAGE < 12.3 AND SLOPE_BATTERY_VOLTAGE < -0.01
-        THEN GREATEST(2, (12.5 - AVG_BATTERY_VOLTAGE) / ABS(SLOPE_BATTERY_VOLTAGE) / 60)
-        WHEN AVG_ENGINE_TEMP > 215 AND TEMP_ACCELERATION > 0
-        THEN GREATEST(1, (240 - AVG_ENGINE_TEMP) / (SLOPE_ENGINE_TEMP * 60 + TEMP_ACCELERATION * 30))
-        WHEN AVG_TRANS_OIL_PRESSURE < 38 AND PRESSURE_ACCELERATION < 0
-        THEN GREATEST(1, (AVG_TRANS_OIL_PRESSURE - 20) / ABS(SLOPE_TRANS_OIL_PRESSURE * 60))
-        ELSE NULL
-    END
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
+HANDLER = 'predict_ttf_temporal'
+IMPORTS = ('@FTFP_V1.ML.MODELS/regression_temporal_v1_1_0.pkl.gz',
+           '@FTFP_V1.ML.MODELS/feature_columns_temporal_v1_1_0.pkl.gz')
+AS $$
+import sys, joblib, numpy as np
+IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
+import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
+reg_model = joblib.load(import_dir + "regression_temporal_v1_1_0.pkl.gz")
+def predict_ttf_temporal(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure, cumulative_volatility, elevated_window_count, volatility_delta, temp_acceleration, pressure_acceleration):
+    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure, cumulative_volatility, elevated_window_count, volatility_delta, temp_acceleration, pressure_acceleration]])
+    if np.isnan(features).any(): return None
+    prediction = reg_model.predict(features)[0]
+    return max(0.0, float(prediction))
 $$;
 
-SELECT '✅ ML UDFs created' AS STATUS;
+SELECT '✅ PREDICT_TTF_TEMPORAL created (XGBoost)' AS STATUS;
+SELECT '✅ All ML UDFs created with real XGBoost models' AS STATUS;
 
 -- ============================================================================
 -- STEP 4: CREATE VIEWS

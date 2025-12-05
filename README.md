@@ -4,134 +4,127 @@ A complete Snowflake demo showcasing **Snowpark Container Services (SPCS)** with
 
 ![FTFP Dashboard](https://img.shields.io/badge/Snowflake-SPCS-blue) ![Python](https://img.shields.io/badge/Python-3.10-green) ![React](https://img.shields.io/badge/React-18-61DAFB)
 
-## 🚀 Quick Start
+---
 
-### Prerequisites
+## 📋 Prerequisites
 
 - Snowflake account (**Enterprise Edition** or higher for SPCS)
 - `ACCOUNTADMIN` role access
-- Docker installed (for image deployment)
-- Snowflake CLI (`snow`) installed ([Installation Guide](https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/installation/installation))
+- [Snowflake CLI](https://docs.snowflake.com/en/developer-guide/snowflake-cli-v2/installation/installation) installed and configured
+- Docker Desktop installed
 
-### One-Command Deployment
+---
+
+## 🚀 Deployment Guide (4 Steps)
+
+### Step 1: Run Infrastructure SQL
+
+Open a Snowflake worksheet (or use `snow sql`) and run:
+
+```
+snowflake/01_INFRASTRUCTURE.sql
+```
+
+This creates:
+- ✅ Database `FTFP_V1` with schemas (FTFP, ML, IMAGES, SERVICE)
+- ✅ Tables for telemetry and seed data
+- ✅ Warehouse `FTFP_V1_WH`
+- ✅ Compute pool `FTFP_V1_POOL`
+- ✅ Image repository `FTFP_REPO`
+- ✅ Internal stages for data and models
+
+**⚠️ IMPORTANT:** Save the `DOCKER_IMAGE_PATH` output - you'll need it in Step 4.
+
+---
+
+### Step 2: Upload Seed Data & ML Models
+
+Clone this repository locally, then upload files to the stages created in Step 1:
 
 ```bash
-# Clone the repository
+# Clone the repo
 git clone https://github.com/azbarbarian2020/ftfp_v1.git
 cd ftfp_v1
 
-# Run automated deployment
-./deploy.sh --account YOUR_ACCOUNT_LOCATOR --user YOUR_USERNAME
+# Upload seed data CSV files
+snow stage copy seed_data/NORMAL_SEED_FULL.csv.gz @FTFP_V1.FTFP.SEED_DATA --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/ENGINE_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_DATA --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/TRANSMISSION_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_DATA --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/ELECTRICAL_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_DATA --overwrite --connection YOUR_CONNECTION
+
+# Upload ML model files
+snow stage copy seed_data/classifier_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/regression_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/regression_temporal_v1_1_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/label_mapping_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/feature_columns_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
+snow stage copy seed_data/feature_columns_temporal_v1_1_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION
 ```
 
-The script will:
-1. ✅ Create database `FTFP_V1` with all schemas
-2. ✅ Create warehouse and compute pool
-3. ✅ Pull Docker image from GitHub Container Registry
-4. ✅ Push image to your Snowflake registry
-5. ✅ Load seed data (100K+ telemetry records)
-6. ✅ Deploy ML models and UDFs
-7. ✅ Start the SPCS service
-8. ✅ Output the application URL
+**Verify uploads:**
+```bash
+snow sql -q "LIST @FTFP_V1.FTFP.SEED_DATA;" --connection YOUR_CONNECTION
+snow sql -q "LIST @FTFP_V1.ML.MODELS;" --connection YOUR_CONNECTION
+```
 
 ---
 
-## 📋 What's Included
+### Step 3: Load Data & Create ML UDFs
 
-### Application Features
+Run the second SQL script:
 
-- **Real-time Fleet Monitoring**: Track 10 trucks with live telemetry
-- **ML Failure Prediction**: XGBoost models predict failures before they happen
-- **Interactive Dashboard**: React-based UI with charts and controls
-- **Failure Simulation**: Trigger engine, transmission, or electrical failures
-- **Time Travel**: Fast-forward simulation to see predictions evolve
+```
+snowflake/02_LOAD_DATA_AND_DEPLOY.sql
+```
 
-### Technical Components
-
-| Component | Technology | Description |
-|-----------|------------|-------------|
-| Frontend | React 18 | Interactive dashboard with Recharts |
-| Backend | FastAPI | High-performance Python API |
-| ML Models | XGBoost | Classifier + regression models |
-| Database | Snowflake | Tables, views, UDFs |
-| Container | SPCS | Snowpark Container Services |
-
-### ML Models
-
-- **Classifier**: Predicts failure type (ENGINE, TRANSMISSION, ELECTRICAL, NORMAL)
-- **TTF Regression**: Predicts hours to failure (basic 11-feature model)
-- **TTF Temporal**: Enhanced prediction with 16 temporal features
+This:
+- ✅ Loads seed data from staged CSV files into tables
+- ✅ Creates XGBoost-powered ML UDFs (classifier + regression)
+- ✅ Creates feature engineering views
+- ✅ Creates stored procedures for service management
 
 ---
 
-## 🔧 Manual Deployment
+### Step 4: Deploy Docker Image & Start Service
 
-If you prefer step-by-step control:
-
-### Step 1: Create Image Repository
-
-```sql
-USE ROLE ACCOUNTADMIN;
-
--- Run the SQL deployment script
--- This creates everything except pushes the Docker image
-!source snowflake/DEPLOY_FTFP_V1.sql
-```
-
-### Step 2: Push Docker Image
+#### 4a. Pull, Tag, and Push the Docker Image
 
 ```bash
-# Get your Snowflake registry URL (from Step 1 output)
-REGISTRY_URL="sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo"
-
-# Pull from GitHub Container Registry
+# Pull the pre-built image from GitHub Container Registry
 docker pull ghcr.io/azbarbarian2020/ftfp_v1:v1
 
-# Tag for your registry
-docker tag ghcr.io/azbarbarian2020/ftfp_v1:v1 $REGISTRY_URL/ftfp_v1:v1
+# Tag for your Snowflake registry (use the path from Step 1 output)
+# Format: <account>.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
+docker tag ghcr.io/azbarbarian2020/ftfp_v1:v1 \
+  sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
 
-# Login to your Snowflake registry
-docker login $REGISTRY_URL
+# Login to your Snowflake registry (just the host, not full path)
+docker login sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com
+# Username: Your Snowflake username
+# Password: Your Snowflake password
 
-# Push
-docker push $REGISTRY_URL/ftfp_v1:v1
+# Push the image
+docker push sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com/ftfp_v1/images/ftfp_repo/ftfp_v1:v1
 ```
 
-### Step 3: Deploy Service
+#### 4b. Deploy the Service
 
+In Snowflake:
 ```sql
--- After image is pushed, deploy the service
+-- Deploy the SPCS service
 CALL FTFP_V1.FTFP.DEPLOY_SERVICE();
 
--- Check status (wait 2-3 minutes)
+-- Wait 2-3 minutes, then check status
 CALL FTFP_V1.FTFP.CHECK_SERVICE_STATUS();
 ```
 
+The `CHECK_SERVICE_STATUS` call returns the application URL when the service is `RUNNING`.
+
 ---
 
-## 📁 Repository Structure
+## ✅ Deployment Complete!
 
-```
-ftfp_v1/
-├── deploy.sh                    # Automated deployment script
-├── docker/
-│   ├── Dockerfile              # Container build file
-│   └── requirements.txt        # Python dependencies
-├── backend/
-│   ├── main.py                 # FastAPI application
-│   └── models/                 # XGBoost ML models (.pkl.gz)
-├── frontend/
-│   └── build/                  # Pre-built React application
-├── seed_data/
-│   ├── NORMAL_SEED_FULL.csv.gz # Normal telemetry patterns
-│   ├── ENGINE_FAILURE_SEED.csv.gz
-│   ├── TRANSMISSION_FAILURE_SEED.csv.gz
-│   └── ELECTRICAL_FAILURE_SEED.csv.gz
-├── snowflake/
-│   ├── DEPLOY_FTFP_V1.sql     # Complete SQL deployment
-│   └── service_spec.yaml       # SPCS service specification
-└── README.md
-```
+Open the URL from `CHECK_SERVICE_STATUS` to access the Fleet Telemetry dashboard.
 
 ---
 
@@ -151,7 +144,7 @@ ftfp_v1/
 1. Select a truck from the dropdown
 2. Choose failure type (Engine, Transmission, Electrical)
 3. Click "Activate Failure"
-4. Watch the truck's telemetry change and predictions update
+4. Watch telemetry change and predictions update in real-time
 
 ### Understanding Predictions
 
@@ -163,39 +156,29 @@ ftfp_v1/
 
 ---
 
-## 🛠 Troubleshooting
+## 📁 Repository Structure
 
-### Service Won't Start
-
-```sql
--- Check compute pool status
-SHOW COMPUTE POOLS LIKE 'FTFP%';
-
--- Check service logs
-CALL FTFP_V1.FTFP.GET_SERVICE_LOGS();
-
--- Verify image exists
-SHOW IMAGES IN IMAGE REPOSITORY FTFP_V1.IMAGES.FTFP_REPO;
 ```
-
-### Image Push Fails
-
-```bash
-# Ensure you're logged into Snowflake registry
-docker logout  # Clear any cached credentials
-docker login sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com
-
-# Use your Snowflake username and password (or MFA token)
-```
-
-### Predictions Not Updating
-
-```sql
--- Check if ML UDFs exist
-SHOW USER FUNCTIONS IN SCHEMA FTFP_V1.ML;
-
--- Manually refresh predictions
-CALL FTFP_V1.FTFP.REFRESH_PREDICTIONS();
+ftfp_v1/
+├── README.md                       # This file
+├── snowflake/
+│   ├── 01_INFRASTRUCTURE.sql      # Phase 1: Create database objects
+│   ├── 02_LOAD_DATA_AND_DEPLOY.sql # Phase 2: Load data, create UDFs
+│   └── service_spec.yaml          # SPCS service specification
+├── seed_data/
+│   ├── NORMAL_SEED_FULL.csv.gz    # Normal telemetry patterns (100K+ rows)
+│   ├── ENGINE_FAILURE_SEED.csv.gz # Engine failure patterns
+│   ├── TRANSMISSION_FAILURE_SEED.csv.gz
+│   ├── ELECTRICAL_FAILURE_SEED.csv.gz
+│   └── *.pkl.gz                   # XGBoost ML models
+├── backend/
+│   ├── main.py                    # FastAPI application
+│   └── models/                    # ML models (embedded in Docker)
+├── frontend/
+│   └── build/                     # Pre-built React application
+└── docker/
+    ├── Dockerfile                 # Container build file
+    └── requirements.txt           # Python dependencies
 ```
 
 ---
@@ -205,16 +188,24 @@ CALL FTFP_V1.FTFP.REFRESH_PREDICTIONS();
 ```
 FTFP_V1 (Database)
 ├── FTFP (Schema)
-│   ├── TELEMETRY, NORMAL_SEED, *_FAILURE_SEED (Tables)
-│   ├── PREDICTION_CACHE, STREAM_STATE (Tables)
-│   └── TELEMETRY_5MIN_AGG, FEATURE_ENGINEERING_VIEW (Views)
+│   ├── TELEMETRY                  # Live telemetry data
+│   ├── NORMAL_SEED               # Normal operating patterns
+│   ├── ENGINE_FAILURE_SEED       # Engine failure patterns
+│   ├── TRANSMISSION_FAILURE_SEED # Transmission failure patterns
+│   ├── ELECTRICAL_FAILURE_SEED   # Electrical failure patterns
+│   ├── PREDICTION_CACHE          # Cached ML predictions
+│   ├── STREAM_STATE              # Streaming state management
+│   ├── SEED_DATA (Stage)         # Staged CSV files
+│   └── FEATURE_ENGINEERING_VIEW  # ML feature views
 ├── ML (Schema)
-│   ├── MODELS (Stage with .pkl.gz files)
-│   └── CLASSIFY_FAILURE_ML, PREDICT_TTF_* (UDFs)
+│   ├── MODELS (Stage)            # XGBoost model files
+│   ├── CLASSIFY_FAILURE_ML()     # Failure type classifier
+│   ├── PREDICT_TTF_ML()          # Time-to-failure regression
+│   └── PREDICT_TTF_TEMPORAL()    # Enhanced temporal TTF
 ├── IMAGES (Schema)
-│   └── FTFP_REPO (Image Repository)
+│   └── FTFP_REPO                 # Docker image repository
 └── SERVICE (Schema)
-    └── FTFP_SERVICE (SPCS Service)
+    └── FTFP_SERVICE              # Running SPCS service
 
 FTFP_V1_WH (Warehouse - X-Small)
 FTFP_V1_POOL (Compute Pool - CPU_X64_XS)
@@ -222,38 +213,72 @@ FTFP_V1_POOL (Compute Pool - CPU_X64_XS)
 
 ---
 
-## 🧹 Cleanup
+## 🛠 Troubleshooting
 
-To remove all objects created by this demo:
+### Service Won't Start
 
 ```sql
--- Remove service first
+-- Check compute pool status (must be ACTIVE or IDLE)
+SHOW COMPUTE POOLS LIKE 'FTFP%';
+
+-- Check service logs
+CALL FTFP_V1.FTFP.GET_SERVICE_LOGS();
+
+-- Verify image was pushed
+SHOW IMAGES IN IMAGE REPOSITORY FTFP_V1.IMAGES.FTFP_REPO;
+```
+
+### Docker Login Fails
+
+```bash
+# Make sure you're logging into just the host
+docker login sfsenorthamerica-YOUR_ACCOUNT.registry.snowflakecomputing.com
+
+# NOT the full path with /ftfp_v1/images/ftfp_repo
+```
+
+### ML Predictions Return NULL
+
+```sql
+-- Verify models are uploaded
+LIST @FTFP_V1.ML.MODELS;
+
+-- Should show 6 .pkl.gz files
+```
+
+### "Repository not found" on Docker Push
+
+Ensure the image repository exists:
+```sql
+SHOW IMAGE REPOSITORIES IN SCHEMA FTFP_V1.IMAGES;
+```
+
+---
+
+## 🧹 Cleanup
+
+To remove all objects:
+
+```sql
+-- Stop service first
 DROP SERVICE IF EXISTS FTFP_V1.SERVICE.FTFP_SERVICE;
 
--- Remove compute pool
+-- Remove compute pool  
 DROP COMPUTE POOL IF EXISTS FTFP_V1_POOL;
 
--- Remove database (includes all schemas, tables, etc.)
+-- Remove database (cascades all schemas/tables/views)
 DROP DATABASE IF EXISTS FTFP_V1;
 
 -- Remove warehouse
 DROP WAREHOUSE IF EXISTS FTFP_V1_WH;
-
--- Remove API integration
-DROP INTEGRATION IF EXISTS FTFP_GITHUB_INTEGRATION;
 ```
 
 ---
 
 ## 📝 License
 
-This project is provided as a demo/sample for Snowflake capabilities. Use at your own discretion.
-
-## 🤝 Contributing
-
-Issues and pull requests welcome! Please ensure any changes maintain compatibility with Snowflake Enterprise Edition.
+This project is provided as a demo/sample for Snowflake capabilities.
 
 ---
 
 **Built with ❄️ Snowflake + 🐍 Python + ⚛️ React**
-
