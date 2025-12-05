@@ -187,8 +187,7 @@ Open the URL from `CHECK_SERVICE_STATUS` to access the Fleet Telemetry dashboard
 | Color | Meaning |
 |-------|---------|
 | 🟢 Green | Normal operation |
-| 🟡 Yellow | Potential issue detected |
-| 🔴 Red | Failure predicted - TTF shown in hours |
+| 🔴 Red | Failure predicted - TTF (Time To Failure) shown in hours |
 
 ---
 
