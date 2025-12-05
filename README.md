@@ -232,25 +232,28 @@ Open the URL from `CHECK_SERVICE_STATUS` to access the Fleet Telemetry dashboard
 
 ```
 ftfp_v1/
-├── README.md                       # This file
+├── README.md                          # This file
 ├── snowflake/
-│   ├── 01_INFRASTRUCTURE.sql      # Phase 1: Create database objects
-│   ├── 02_LOAD_DATA_AND_DEPLOY.sql # Phase 2: Load data, create UDFs
-│   └── service_spec.yaml          # SPCS service specification
-├── seed_data/
-│   ├── NORMAL_SEED_FULL.csv.gz    # Normal telemetry patterns (100K+ rows)
-│   ├── ENGINE_FAILURE_SEED.csv.gz # Engine failure patterns
+│   ├── 01_INFRASTRUCTURE.sql          # Step 1: Create database, stages, compute pool
+│   ├── 02_LOAD_DATA_AND_DEPLOY.sql    # Step 3: Load data, create ML UDFs, views
+│   └── service_spec.yaml              # SPCS service specification
+├── seed_data/                         # Files to upload to Snowflake stages
+│   ├── NORMAL_SEED_FULL.csv.gz        # Normal telemetry (100K+ rows)
+│   ├── ENGINE_FAILURE_SEED.csv.gz     # Engine failure patterns
 │   ├── TRANSMISSION_FAILURE_SEED.csv.gz
 │   ├── ELECTRICAL_FAILURE_SEED.csv.gz
-│   └── *.pkl.gz                   # XGBoost ML models
-├── backend/
-│   ├── main.py                    # FastAPI application
-│   └── models/                    # ML models (embedded in Docker)
+│   ├── classifier_v1_0_0.pkl.gz       # XGBoost classifier model
+│   ├── regression_v1_0_0.pkl.gz       # TTF regression model
+│   ├── regression_temporal_v1_1_0.pkl.gz
+│   └── (other .pkl.gz support files)
+├── backend/                           # For Docker image build
+│   ├── main.py                        # FastAPI application
+│   └── models/                        # ML models (copied into container)
 ├── frontend/
-│   └── build/                     # Pre-built React application
+│   └── build/                         # Pre-built React application
 └── docker/
-    ├── Dockerfile                 # Container build file
-    └── requirements.txt           # Python dependencies
+    ├── Dockerfile                     # Container build file
+    └── requirements.txt               # Python dependencies
 ```
 
 ---
