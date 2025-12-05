@@ -672,22 +672,215 @@ Snowflake SPCS doesn't support all Kubernetes probe options. Start without, add 
 
 ---
 
-## 📚 Project History
+## 13. ML Model Training Lessons
 
-| Project | Focus Area |
-|---------|------------|
-| Predict1-6 | Initial SPCS exploration |
-| PredictiveFailure* | Frontend/backend integration |
-| Streaming1 | Real-time data patterns |
-| Combo_predict | Combined ML + streaming |
-| Combo_predict_clean | Database independence |
-| Native_app | Native App packaging attempts |
-| ftfp_v1 | Final deployable package |
+### V1 vs V2 Model Evolution
 
-**Total development time:** ~3 months  
-**Key breakthrough:** Extracting from working image, not source files
+**V1 Models (Basic - 3 features):**
+- Only base features: temp, pressure, voltage
+- Could NOT detect electrical failures
+- No trend or volatility detection
+
+**V2 Models (Enhanced - 10+ features):**
+- Rolling window features (1hr, 3hr, 8hr windows)
+- Volatility metrics: `BATTERY_VOLTAGE_1HR_STDDEV`, `MAX_STDDEV`, `TOTAL_RANGE`
+- Trend metrics: `ENGINE_TEMP_1HR_CHANGE`, `TRANS_OIL_PRESSURE_1HR_CHANGE`
+
+### Failure Pattern Signatures
+
+| Failure Type | Key Signal | Detection Method |
+|--------------|------------|------------------|
+| **ENGINE** | Rising temperature | `ENGINE_TEMP_1HR_CHANGE > 9°F` |
+| **TRANSMISSION** | Falling pressure | `TRANS_OIL_PRESSURE_1HR_CHANGE < -2.4 psi` |
+| **ELECTRICAL** | Voltage volatility | `BATTERY_VOLTAGE_1HR_STDDEV > 1.5V` (4X normal) |
+
+### Model Training Best Practices
+
+```python
+# Entity-based train/test split (prevent data leakage)
+# DON'T split by rows - trucks in training shouldn't be in test
+train_entities = entities[:32]  # 80%
+test_entities = entities[32:]   # 20%
+
+# Balanced class weights for imbalanced data
+classifier = RandomForestClassifier(class_weight='balanced')
+
+# Exclude NORMAL data from TTF regression (TTF = -1 for normal)
+regression_data = training_data[training_data['TTF'] >= 0]
+```
+
+### Temporal Model (16 features) vs Basic Model (11 features)
+
+- **Basic:** Good for ENGINE and TRANSMISSION (trend-based)
+- **Temporal:** Required for ELECTRICAL (volatility accumulates over time)
+- Use BOTH and pick based on failure type classification
 
 ---
 
-*This document should enable rapid development on future FTFP versions and similar SPCS projects.*
+## 14. SPCS Authentication & Endpoints
+
+### Public Endpoints Still Require Snowflake Auth
+
+**Misconception:** `public: true` means anyone can access  
+**Reality:** Users must authenticate with Snowflake OAuth first
+
+```yaml
+endpoints:
+- name: app
+  port: 8000
+  public: true  # Still requires Snowflake login!
+```
+
+### OAuth Flow in SPCS
+
+1. User accesses endpoint URL
+2. Snowflake redirects to OAuth login
+3. User authenticates (one-time per session)
+4. Backend reads token from `/snowflake/session/token`
+
+### Backend Token Usage
+
+```python
+if os.path.exists('/snowflake/session/token'):
+    # Running in SPCS - use OAuth
+    token = open('/snowflake/session/token').read()
+    conn = snowflake.connector.connect(
+        authenticator='oauth',
+        token=token,
+        ...
+    )
+```
+
+---
+
+## 15. Production Hardening
+
+### Health Check Endpoints
+
+```python
+@app.get("/health")
+async def health_check():
+    try:
+        result = execute_sql("SELECT 1")
+        return {"status": "healthy", "database": "connected"}
+    except:
+        return JSONResponse(status_code=503, content={"status": "unhealthy"})
+
+@app.get("/ready")
+async def readiness_check():
+    return {"ready": session is not None}
+```
+
+### Retry Logic with Exponential Backoff
+
+```python
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=10))
+def execute_sql_with_retry(query: str):
+    return session.sql(query).collect()
+```
+
+### Resource Monitors (Cost Protection)
+
+```sql
+CREATE RESOURCE MONITOR FTFP_MONITOR
+WITH CREDIT_QUOTA = 100
+FREQUENCY = MONTHLY
+TRIGGERS
+    ON 75 PERCENT DO NOTIFY
+    ON 100 PERCENT DO SUSPEND;
+
+ALTER WAREHOUSE FTFP_WH SET RESOURCE_MONITOR = FTFP_MONITOR;
+```
+
+### Query Tagging for Debugging
+
+```python
+# Add to each endpoint for query attribution
+execute_sql("ALTER SESSION SET QUERY_TAG = 'FTFP_API_telemetry'")
+```
+
+---
+
+## 16. Common Pitfalls & Resolutions
+
+### Local Changes Not Reflected in Service
+
+**Problem:** Made code changes but service behaves the same  
+**Cause:** Changes are in files, not deployed Docker image  
+**Solution:** Rebuild image, push, restart service
+
+### Predictions Show NORMAL After Failure Injection
+
+**Problem:** ML still shows NORMAL despite failures active  
+**Cause:** Stale normal data exists before failure epoch  
+**Solution:** Delete stale data, then fast-forward
+
+```sql
+DELETE FROM TELEMETRY 
+WHERE ENTITY_ID = 'TRUCK_001' 
+AND TIMESTAMP >= (SELECT effective_from_epoch FROM FAILURE_CONFIG WHERE entity_id = 'TRUCK_001');
+```
+
+### Service Keeps Restarting (120+ restarts)
+
+**Problem:** Container crash loop  
+**Common Causes:**
+1. Wrong platform (ARM64 vs amd64)
+2. Deprecated Flask methods (e.g., `before_first_request`)
+3. Port mismatch (80 vs 8000 vs 8080)
+4. Missing dependencies
+
+**Debug:** Check service logs
+```sql
+CALL SYSTEM$GET_SERVICE_LOGS('SERVICE', '0', 'container', 200);
+```
+
+### 504 Gateway Timeout
+
+**Problem:** Requests timing out  
+**Cause:** Connection pool exhaustion, too many concurrent requests  
+**Solution:** Add connection pooling, caching, combined endpoints
+
+---
+
+## 📚 Project History
+
+| Project | Focus Area | Key Lessons |
+|---------|------------|-------------|
+| Predict1-6 | Initial SPCS exploration | Platform requirements |
+| PredictiveFailure* | Frontend/backend integration | React + FastAPI patterns |
+| Streaming1 | Real-time data patterns | Epoch-based streaming |
+| Predict2/fleet_demo | SPCS deployment | OAuth, service specs |
+| Combo_predict | Combined ML + streaming | Performance optimization |
+| Combo_predict_clean | Database independence | Clone limitations |
+| FTFP_111025 | Clean architecture | Modular design |
+| FTFP_111125PM | ML pipeline optimization | Model training |
+| Native_app | Native App packaging | Image bundling failures |
+| ftfp_v1 | Final deployable package | GitHub deployment |
+
+**Total development time:** ~3 months (20+ cursor projects)  
+**Key breakthroughs:**
+1. Extracting from working Docker image, not source files
+2. Platform must be linux/amd64 (in Dockerfile AND build command)
+3. Database clone doesn't clone UDFs/stages
+4. Seed tables are operational data, not legacy
+5. Connection pooling critical for performance
+
+---
+
+## 🚨 Priority Order When Debugging
+
+1. **Check platform** - Is it linux/amd64?
+2. **Check service logs** - What's actually failing?
+3. **Check image path** - Lowercase db/schema/repo?
+4. **Check database refs** - All occurrences changed?
+5. **Check frontend MD5** - Matches working version?
+6. **Check data** - Stale data blocking new patterns?
+7. **Check connections** - Pool exhausted?
+
+---
+
+*This document captures lessons from 3+ months and 20+ projects. Follow these rules to avoid repeating hard-learned mistakes.*
 

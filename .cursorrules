@@ -91,3 +91,30 @@ This is a Fleet Telemetry Failure Prediction (FTFP) application using:
 - Write logic may skip existing rows - delete stale data before fast-forward
 - TRAINING_TBL is for ML training, seed tables are for data writer
 
+## ML Model Rules
+- V2 models need 10+ features including volatility and trends
+- Electrical failures need volatility features (STDDEV), not just trends
+- Entity-based train/test split (don't split by rows - data leakage)
+- Exclude NORMAL data from TTF regression training (TTF = -1)
+- Use temporal model for electrical, basic model for engine/transmission
+
+## SPCS Auth Rules
+- `public: true` still requires Snowflake OAuth login
+- Backend reads token from `/snowflake/session/token`
+- One-time auth per browser session
+
+## Production Hardening
+- Add /health and /ready endpoints for monitoring
+- Use retry with exponential backoff for DB operations
+- Add resource monitors for cost protection
+- Use query tagging for debugging
+
+## Debug Priority Order
+1. Check platform (linux/amd64?)
+2. Check service logs (SYSTEM$GET_SERVICE_LOGS)
+3. Check image path (lowercase?)
+4. Check database refs (all changed?)
+5. Check frontend MD5 (matches working?)
+6. Check data (stale data blocking?)
+7. Check connections (pool exhausted?)
+
