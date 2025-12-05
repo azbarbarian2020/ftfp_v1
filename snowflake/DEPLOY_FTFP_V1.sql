@@ -213,10 +213,11 @@ CREATE IMAGE REPOSITORY IF NOT EXISTS FTFP_REPO
 -- Show repository URL for user
 SHOW IMAGE REPOSITORIES IN SCHEMA IMAGES;
 
-SELECT '✅ Phase 4: Image repository created' AS STATUS;
 SELECT '📋 Push your Docker image to: ' || "repository_url" || '/ftfp_v1:v1' AS INSTRUCTIONS
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE "name" = 'FTFP_REPO';
+
+SELECT '✅ Phase 4: Image repository created' AS STATUS;
 
 -- ============================================================================
 -- PHASE 5: CREATE ML STAGE AND LOAD MODELS
