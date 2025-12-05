@@ -222,50 +222,94 @@ SELECT '✅ Phase 4: Image repository created' AS STATUS;
 -- Phase 5 removed - using SQL-based UDFs instead of file-based ML models
 
 -- ============================================================================
--- PHASE 6: LOAD SEED DATA FROM GITHUB (via external stage)
+-- PHASE 6: GENERATE SEED DATA
 -- ============================================================================
-SELECT '📦 Phase 6: Loading seed data from GitHub...' AS STATUS;
+-- Generates telemetry seed data for demo simulation
+-- NORMAL_SEED: 10 trucks with normal operating telemetry (epochs 0-9999)
+-- Failure seeds: Progressive failure patterns for each failure type
+SELECT '📦 Phase 6: Generating seed data...' AS STATUS;
 
 USE SCHEMA FTFP;
 
--- Create external stage pointing to GitHub raw content
-CREATE OR REPLACE STAGE GITHUB_RAW_STAGE
-    URL = 'https://raw.githubusercontent.com/azbarbarian2020/ftfp_v1/main/seed_data/'
-    FILE_FORMAT = (TYPE = CSV COMPRESSION = GZIP FIELD_OPTIONALLY_ENCLOSED_BY = '"' SKIP_HEADER = 1);
-
--- Load NORMAL_SEED
+-- Generate NORMAL_SEED: 10 trucks x 10,000 epochs = 100,000 rows
+-- Normal ranges: Temp 180-210°F, Pressure 40-55 PSI, Voltage 12.8-14.5V
 TRUNCATE TABLE IF EXISTS NORMAL_SEED;
-COPY INTO NORMAL_SEED (ENTITY_ID, EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_RAW_STAGE/NORMAL_SEED_FULL.csv.gz
-ON_ERROR = CONTINUE;
+INSERT INTO NORMAL_SEED (ENTITY_ID, EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+WITH trucks AS (
+    SELECT 'TRUCK_' || LPAD(ROW_NUMBER() OVER (ORDER BY SEQ4()), 2, '0') as ENTITY_ID
+    FROM TABLE(GENERATOR(ROWCOUNT => 10))
+),
+epochs AS (
+    SELECT SEQ4() as EPOCH FROM TABLE(GENERATOR(ROWCOUNT => 10000))
+)
+SELECT 
+    t.ENTITY_ID,
+    e.EPOCH,
+    185 + UNIFORM(0::FLOAT, 25::FLOAT, RANDOM()) as ENGINE_TEMP,
+    42 + UNIFORM(0::FLOAT, 13::FLOAT, RANDOM()) as TRANS_OIL_PRESSURE,
+    13.2 + UNIFORM(0::FLOAT, 1.3::FLOAT, RANDOM()) as BATTERY_VOLTAGE
+FROM trucks t
+CROSS JOIN epochs e;
 
-SELECT 'NORMAL_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM NORMAL_SEED;
+SELECT 'NORMAL_SEED: ' || COUNT(*) || ' rows' AS STATUS FROM NORMAL_SEED;
 
--- Load ENGINE_FAILURE_SEED
+-- Generate ENGINE_FAILURE_SEED: Temperature rises from 200°F to 280°F+ over ~200 epochs
+-- Then stays critically high for remaining epochs (simulates overheating engine)
 TRUNCATE TABLE IF EXISTS ENGINE_FAILURE_SEED;
-COPY INTO ENGINE_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_RAW_STAGE/ENGINE_FAILURE_SEED.csv.gz
-ON_ERROR = CONTINUE;
+INSERT INTO ENGINE_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+SELECT 
+    SEQ4() as EPOCH,
+    -- Temperature rises gradually then plateaus at dangerous levels
+    CASE 
+        WHEN SEQ4() < 200 THEN 200 + (SEQ4() * 0.4) + UNIFORM(-3::FLOAT, 3::FLOAT, RANDOM())
+        ELSE 280 + UNIFORM(-5::FLOAT, 20::FLOAT, RANDOM())
+    END as ENGINE_TEMP,
+    -- Pressure stays relatively normal
+    44 + UNIFORM(-4::FLOAT, 4::FLOAT, RANDOM()) as TRANS_OIL_PRESSURE,
+    -- Voltage stays normal
+    13.5 + UNIFORM(-0.5::FLOAT, 0.5::FLOAT, RANDOM()) as BATTERY_VOLTAGE
+FROM TABLE(GENERATOR(ROWCOUNT => 5000));
 
-SELECT 'ENGINE_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM ENGINE_FAILURE_SEED;
+SELECT 'ENGINE_FAILURE_SEED: ' || COUNT(*) || ' rows' AS STATUS FROM ENGINE_FAILURE_SEED;
 
--- Load TRANSMISSION_FAILURE_SEED
+-- Generate TRANSMISSION_FAILURE_SEED: Pressure drops from 45 PSI to <25 PSI over ~250 epochs
 TRUNCATE TABLE IF EXISTS TRANSMISSION_FAILURE_SEED;
-COPY INTO TRANSMISSION_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_RAW_STAGE/TRANSMISSION_FAILURE_SEED.csv.gz
-ON_ERROR = CONTINUE;
+INSERT INTO TRANSMISSION_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+SELECT 
+    SEQ4() as EPOCH,
+    -- Temperature stays normal
+    190 + UNIFORM(-10::FLOAT, 15::FLOAT, RANDOM()) as ENGINE_TEMP,
+    -- Pressure drops gradually then stays critically low
+    CASE 
+        WHEN SEQ4() < 250 THEN 48 - (SEQ4() * 0.1) + UNIFORM(-2::FLOAT, 2::FLOAT, RANDOM())
+        ELSE 20 + UNIFORM(-5::FLOAT, 5::FLOAT, RANDOM())
+    END as TRANS_OIL_PRESSURE,
+    -- Voltage stays normal
+    13.6 + UNIFORM(-0.4::FLOAT, 0.4::FLOAT, RANDOM()) as BATTERY_VOLTAGE
+FROM TABLE(GENERATOR(ROWCOUNT => 5000));
 
-SELECT 'TRANSMISSION_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM TRANSMISSION_FAILURE_SEED;
+SELECT 'TRANSMISSION_FAILURE_SEED: ' || COUNT(*) || ' rows' AS STATUS FROM TRANSMISSION_FAILURE_SEED;
 
--- Load ELECTRICAL_FAILURE_SEED
+-- Generate ELECTRICAL_FAILURE_SEED: Voltage drops from 13.5V to <11V over ~300 epochs
+-- Also increases volatility (simulates failing alternator/battery)
 TRUNCATE TABLE IF EXISTS ELECTRICAL_FAILURE_SEED;
-COPY INTO ELECTRICAL_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_RAW_STAGE/ELECTRICAL_FAILURE_SEED.csv.gz
-ON_ERROR = CONTINUE;
+INSERT INTO ELECTRICAL_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+SELECT 
+    SEQ4() as EPOCH,
+    -- Temperature stays normal
+    188 + UNIFORM(-8::FLOAT, 12::FLOAT, RANDOM()) as ENGINE_TEMP,
+    -- Pressure stays normal
+    45 + UNIFORM(-5::FLOAT, 5::FLOAT, RANDOM()) as TRANS_OIL_PRESSURE,
+    -- Voltage drops gradually with increasing instability
+    CASE 
+        WHEN SEQ4() < 300 THEN 13.8 - (SEQ4() * 0.01) + UNIFORM(-0.1::FLOAT, 0.1::FLOAT, RANDOM()) * (1 + SEQ4()/300.0)
+        ELSE 10.5 + UNIFORM(-0.5::FLOAT, 0.5::FLOAT, RANDOM())
+    END as BATTERY_VOLTAGE
+FROM TABLE(GENERATOR(ROWCOUNT => 5000));
 
-SELECT 'ELECTRICAL_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM ELECTRICAL_FAILURE_SEED;
+SELECT 'ELECTRICAL_FAILURE_SEED: ' || COUNT(*) || ' rows' AS STATUS FROM ELECTRICAL_FAILURE_SEED;
 
-SELECT '✅ Phase 6: Seed data loaded from GitHub' AS STATUS;
+SELECT '✅ Phase 6: Seed data generated' AS STATUS;
 
 -- ============================================================================
 -- PHASE 7: CREATE ML UDFs (Rule-based for demo - no file uploads needed)
