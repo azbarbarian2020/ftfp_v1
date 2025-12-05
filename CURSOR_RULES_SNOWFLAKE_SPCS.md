@@ -563,7 +563,7 @@ sed 's/old/new/g' in > out    # Find/replace
 
 ## 🎯 Golden Rules
 
-1. **Platform:** Always `--platform linux/amd64` for Docker
+1. **Platform:** Always `--platform linux/amd64` for Docker (also in Dockerfile FROM statements)
 2. **Source of truth:** Working Docker image, not disk files
 3. **Database refs:** Change ALL occurrences, verify with grep
 4. **Frontend:** Verify MD5 hash matches working version
@@ -573,6 +573,102 @@ sed 's/old/new/g' in > out    # Find/replace
 8. **Image paths:** Database/schema/repo must be lowercase
 9. **Independence:** Verify with actual data, not assumptions
 10. **Smaller is faster:** XS warehouse/pool often outperforms larger
+11. **Seed tables are operational:** NOT legacy data - required for data streaming
+12. **Local changes ≠ deployed:** Code in files isn't deployed until Docker build/push
+13. **Data overwrites:** Write logic may skip existing rows - delete stale data first
+14. **Connection pooling matters:** 72+ new connections/min kills performance
+
+---
+
+## 11. Performance & Architecture Lessons
+
+### Request Amplification Problem
+
+Multiple frontend polling endpoints create massive overhead:
+- Each request = new Snowflake session
+- 5 API calls every 5-10 seconds = 72+ requests/minute
+- Solution: Combined `/api/dashboard-data` endpoint
+
+### Connection Pooling is Critical
+
+```python
+# BAD - New connection every request
+def get_connection():
+    return snowflake.connector.connect(...)  # ❌
+
+# GOOD - Reuse connections
+from snowflake.connector.pooling import PooledConnection
+pool = PooledConnection(pool_size=5, ...)  # ✅
+```
+
+### In-Memory Caching
+
+```python
+from cachetools import TTLCache
+
+# Predictions don't change every second
+prediction_cache = TTLCache(maxsize=1, ttl=30)
+
+# Telemetry can be cached briefly
+telemetry_cache = TTLCache(maxsize=1, ttl=3)
+```
+
+### Cluster Hybrid Tables
+
+```sql
+ALTER HYBRID TABLE TELEMETRY CLUSTER BY (ENTITY_ID, TIMESTAMP);
+```
+
+### Data Overwrite Gotcha
+
+Write logic often has protection against duplicates:
+```sql
+LEFT JOIN existing ON existing.Timestamp = new.ts
+WHERE existing.entity_id IS NULL  -- Skips existing rows!
+```
+
+**If failure patterns don't appear:** Delete stale normal data first, then fast-forward.
+
+---
+
+## 12. Dockerfile Best Practices
+
+### Platform in FROM statements (not just build command)
+
+```dockerfile
+# BETTER - Platform in Dockerfile itself
+FROM --platform=linux/amd64 python:3.10-slim
+
+# Also works but easier to forget
+docker build --platform linux/amd64 ...
+```
+
+### Resource Requests Matter
+
+```yaml
+# Works better than over-provisioning
+resources:
+  requests:
+    memory: 1Gi
+    cpu: 0.5  # Numeric, not "0.5" string
+  limits:
+    memory: 2Gi
+    cpu: 1
+```
+
+### Simpler CMD is Better
+
+```dockerfile
+# Simple - fewer failure points
+CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+# Complex - more things to break
+CMD ["python", "/app/custom_server.py"]
+```
+
+### No readinessProbe initially
+
+Snowflake SPCS doesn't support all Kubernetes probe options. Start without, add later if needed.
 
 ---
 

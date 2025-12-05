@@ -69,4 +69,25 @@ This is a Fleet Telemetry Failure Prediction (FTFP) application using:
 - "image does not exist" → Check lowercase in image path
 - Predictions not updating → Wrong frontend build, extract from working image
 - Service writes to wrong DB → Hardcoded refs in backend, change ALL occurrences
+- ML shows NORMAL after failure injection → Stale data exists, delete then fast-forward
+- 504 timeouts → Too many connections, add connection pooling/caching
+- Local code changes not reflected → Must rebuild Docker image and push
+
+## Performance Rules
+- Smaller often faster: XS warehouse/pool outperforms larger for this workload
+- Connection pooling critical: 72+ new connections/min kills performance
+- Cache predictions (TTL 30s) - they don't change every second
+- Cluster hybrid tables: CLUSTER BY (ENTITY_ID, TIMESTAMP)
+- Combined API endpoint better than multiple polling endpoints
+
+## Docker Rules
+- Platform in Dockerfile FROM: `FROM --platform=linux/amd64 python:3.10-slim`
+- Resource requests as numbers: `cpu: 0.5` not `cpu: "0.5"`
+- Simpler CMD = fewer failure points
+- No readinessProbe initially (SPCS doesn't support all options)
+
+## Data Rules
+- Seed tables are operational data for streaming simulation - DO NOT DELETE
+- Write logic may skip existing rows - delete stale data before fast-forward
+- TRAINING_TBL is for ML training, seed tables are for data writer
 
