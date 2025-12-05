@@ -1,0 +1,72 @@
+# Cursor Rules for FTFP Snowflake SPCS Projects
+
+## Project Context
+This is a Fleet Telemetry Failure Prediction (FTFP) application using:
+- Snowflake Snowpark Container Services (SPCS)
+- FastAPI backend with Python
+- React frontend (pre-built)
+- XGBoost ML models for failure prediction
+- Deployment via GitHub repository
+
+## Critical Rules - NEVER Violate
+
+### Docker Images
+- ALWAYS use `--platform linux/amd64` when building Docker images
+- Image path format: `account.registry.snowflakecomputing.com/database/schema/repo/image:tag`
+- Database, schema, repo MUST be lowercase in image paths
+- Login to registry host only, not full path: `docker login account.registry.snowflakecomputing.com`
+
+### Database Operations
+- DATABASE CLONE does NOT clone: UDFs, stages, image repos, services, compute pools
+- After cloning, MUST manually recreate: stages, copy models, create UDFs
+- RESULT_SCAN must IMMEDIATELY follow SHOW command (no statements between)
+- Seed tables (NORMAL_SEED, *_FAILURE_SEED) are operational data, NOT legacy - DO NOT DELETE
+
+### Source of Truth
+- ALWAYS extract code from working Docker image, NEVER from disk files
+- Verify frontend with MD5 hash - must match working version exactly
+- When changing database refs, replace ALL occurrences and verify with grep
+
+### Snowflake CLI
+- Use `snow sql --connection NAME -q "SQL"` for queries
+- Use `snow stage copy` for file uploads
+- Use `snow spcs image-registry login` for Docker auth
+
+### SPCS Services
+- Use CPU_X64_XS instance family (smallest, often fastest for this workload)
+- Service logs: `CALL SYSTEM$GET_SERVICE_LOGS('SERVICE', '0', 'container', 100)`
+- Endpoint URL from: `SHOW ENDPOINTS IN SERVICE SERVICE_NAME`
+
+### ML Models
+- 6 PKL files required in @ML.MODELS stage
+- Python UDFs load models via IMPORTS clause
+- First UDF call takes ~5 seconds (model loading), subsequent calls fast
+
+### What Doesn't Work
+- Native App image bundling (no working syntax)
+- COPY INTO from GitHub URLs
+- External stages with HTTPS URLs
+- Python UDFs with external packages in Native App versioned schemas
+
+## File Locations
+- SQL scripts: `snowflake/`
+- Seed data + models: `seed_data/` (upload to Snowflake stages)
+- Backend: `backend/main.py`
+- Frontend: `frontend/build/` (pre-built React)
+- Docker: `docker/Dockerfile`
+
+## Deployment Flow
+1. Run `01_INFRASTRUCTURE.sql` (creates DB, stages, compute pool)
+2. Upload CSV files to @FTFP_V1.FTFP.SEED_STAGE via Snowsight UI
+3. Upload PKL files to @FTFP_V1.ML.MODELS via Snowsight UI
+4. Run `02_LOAD_DATA_AND_DEPLOY.sql` (loads data, creates UDFs)
+5. Docker pull/tag/push from GHCR to Snowflake
+6. CALL DEPLOY_SERVICE()
+
+## Common Errors & Fixes
+- "invalid identifier repository_url" → RESULT_SCAN not immediately after SHOW
+- "Unsupported feature Copy into from Git Repository" → Use internal stage instead
+- "image does not exist" → Check lowercase in image path
+- Predictions not updating → Wrong frontend build, extract from working image
+- Service writes to wrong DB → Hardcoded refs in backend, change ALL occurrences
+
