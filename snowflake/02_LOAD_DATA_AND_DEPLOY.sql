@@ -66,21 +66,14 @@ SELECT 'ELECTRICAL_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM 
 SELECT '✅ Seed data loaded' AS STATUS;
 
 -- ============================================================================
--- STEP 3: UPLOAD ML MODELS AND CREATE UDFs
+-- STEP 3: CREATE ML UDFs (using models from @FTFP_V1.ML.MODELS stage)
 -- ============================================================================
-SELECT '📦 Creating ML model stage and UDFs...' AS STATUS;
+SELECT '📦 Creating ML UDFs with XGBoost models...' AS STATUS;
 
 USE SCHEMA ML;
 
--- Create stage for ML models
-CREATE STAGE IF NOT EXISTS MODELS DIRECTORY = (ENABLE = TRUE);
-
-SELECT '⚠️ Upload ML model files to @FTFP_V1.ML.MODELS before continuing' AS NOTE;
-SELECT 'Run: snow stage copy seed_data/<file>.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONNECTION' AS COMMAND;
-SELECT 'Files: classifier_v1_0_0.pkl.gz, regression_v1_0_0.pkl.gz, regression_temporal_v1_1_0.pkl.gz,' AS FILES;
-SELECT '       label_mapping_v1_0_0.pkl.gz, feature_columns_v1_0_0.pkl.gz, feature_columns_temporal_v1_1_0.pkl.gz' AS FILES2;
-
--- Verify models are uploaded
+-- Verify models were uploaded in Phase 1
+SELECT '📋 Verifying ML model files...' AS STATUS;
 LIST @MODELS;
 
 -- Classification UDF - XGBoost classifier model

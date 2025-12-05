@@ -129,15 +129,24 @@ FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE "name" = 'FTFP_REPO';
 
 -- ============================================================================
--- STEP 5: CREATE SEED DATA STAGE
+-- STEP 5: CREATE STAGES
 -- ============================================================================
-USE SCHEMA FTFP;
 
+-- Seed data stage (CSV files)
+USE SCHEMA FTFP;
 CREATE STAGE IF NOT EXISTS SEED_STAGE
     FILE_FORMAT = (TYPE = CSV COMPRESSION = GZIP FIELD_OPTIONALLY_ENCLOSED_BY = '"' SKIP_HEADER = 1)
     COMMENT = 'Stage for seed data CSV files';
 
-SELECT '✅ Seed data stage created' AS STATUS;
+SELECT '✅ Seed data stage created: @FTFP_V1.FTFP.SEED_STAGE' AS STATUS;
+
+-- ML models stage (PKL files)
+USE SCHEMA ML;
+CREATE STAGE IF NOT EXISTS MODELS
+    DIRECTORY = (ENABLE = TRUE)
+    COMMENT = 'Stage for XGBoost ML model files';
+
+SELECT '✅ ML models stage created: @FTFP_V1.ML.MODELS' AS STATUS;
 
 -- ============================================================================
 -- STEP 6: CREATE COMPUTE POOL
@@ -159,22 +168,25 @@ SELECT '🎉 PHASE 1 COMPLETE - Infrastructure Created!' AS STATUS;
 SELECT '============================================================================' AS SEP;
 
 SELECT '' AS BLANK;
-SELECT '📋 NEXT STEP: Upload seed data files to the stage' AS INSTRUCTIONS;
+SELECT '📋 NEXT STEP: Upload seed data AND ML model files to stages' AS INSTRUCTIONS;
 SELECT '' AS BLANK;
-SELECT 'Option A - Using Snowflake CLI:' AS METHOD;
-SELECT '  snow stage put seed_data/*.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONNECTION' AS COMMAND;
-SELECT '' AS BLANK;
-SELECT 'Option B - Using SnowSQL:' AS METHOD;
-SELECT '  PUT file:///path/to/ftfp_v1/seed_data/*.csv.gz @FTFP_V1.FTFP.SEED_STAGE;' AS COMMAND;
-SELECT '' AS BLANK;
-SELECT 'Option C - Using Snowsight UI:' AS METHOD;
-SELECT '  Data > Databases > FTFP_V1 > FTFP > Stages > SEED_STAGE > + Files' AS STEPS;
-SELECT '' AS BLANK;
-SELECT 'Files to upload (from GitHub repo seed_data/ folder):' AS FILES;
-SELECT '  - NORMAL_SEED_FULL.csv.gz (25 MB)' AS FILE1;
-SELECT '  - ENGINE_FAILURE_SEED.csv.gz' AS FILE2;
-SELECT '  - TRANSMISSION_FAILURE_SEED.csv.gz' AS FILE3;
-SELECT '  - ELECTRICAL_FAILURE_SEED.csv.gz' AS FILE4;
-SELECT '' AS BLANK;
-SELECT 'After uploading, run: 02_LOAD_DATA_AND_DEPLOY.sql' AS NEXT;
+SELECT '=== UPLOAD SEED DATA (CSV files) ===' AS SECTION1;
+SELECT 'snow stage copy seed_data/NORMAL_SEED_FULL.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONN' AS CMD1;
+SELECT 'snow stage copy seed_data/ENGINE_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONN' AS CMD2;
+SELECT 'snow stage copy seed_data/TRANSMISSION_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONN' AS CMD3;
+SELECT 'snow stage copy seed_data/ELECTRICAL_FAILURE_SEED.csv.gz @FTFP_V1.FTFP.SEED_STAGE --overwrite --connection YOUR_CONN' AS CMD4;
+SELECT '' AS BLANK2;
+SELECT '=== UPLOAD ML MODELS (PKL files) ===' AS SECTION2;
+SELECT 'snow stage copy seed_data/classifier_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONN' AS CMD5;
+SELECT 'snow stage copy seed_data/regression_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONN' AS CMD6;
+SELECT 'snow stage copy seed_data/regression_temporal_v1_1_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONN' AS CMD7;
+SELECT 'snow stage copy seed_data/label_mapping_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONN' AS CMD8;
+SELECT 'snow stage copy seed_data/feature_columns_v1_0_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONN' AS CMD9;
+SELECT 'snow stage copy seed_data/feature_columns_temporal_v1_1_0.pkl.gz @FTFP_V1.ML.MODELS --overwrite --connection YOUR_CONN' AS CMD10;
+SELECT '' AS BLANK3;
+SELECT '=== VERIFY UPLOADS ===' AS SECTION3;
+SELECT 'LIST @FTFP_V1.FTFP.SEED_STAGE;  -- Should show 4 CSV files' AS VERIFY1;
+SELECT 'LIST @FTFP_V1.ML.MODELS;        -- Should show 6 PKL files' AS VERIFY2;
+SELECT '' AS BLANK4;
+SELECT 'After uploading ALL files, run: 02_LOAD_DATA_AND_DEPLOY.sql' AS NEXT;
 
