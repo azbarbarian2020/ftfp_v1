@@ -219,129 +219,76 @@ WHERE "name" = 'FTFP_REPO';
 
 SELECT '✅ Phase 4: Image repository created' AS STATUS;
 
--- ============================================================================
--- PHASE 5: CREATE ML STAGE AND LOAD MODELS
--- ============================================================================
-SELECT '📦 Phase 5: Creating ML resources...' AS STATUS;
-
-USE SCHEMA ML;
-
--- Create stage for ML models
-CREATE STAGE IF NOT EXISTS MODELS
-    DIRECTORY = (ENABLE = TRUE)
-    COMMENT = 'XGBoost ML model files';
-
--- Note: Model files will be loaded via GitHub integration or manual upload
-
-SELECT '✅ Phase 5: ML stage created' AS STATUS;
+-- Phase 5 removed - using SQL-based UDFs instead of file-based ML models
 
 -- ============================================================================
--- PHASE 6: CREATE GITHUB INTEGRATION FOR SEED DATA
+-- PHASE 6: GENERATE SEED DATA
 -- ============================================================================
-SELECT '📦 Phase 6: Setting up GitHub integration...' AS STATUS;
+-- Note: Generating seed data via SQL (more reliable than loading from files)
+SELECT '📦 Phase 6: Generating seed data...' AS STATUS;
 
--- Create API integration for GitHub
-CREATE OR REPLACE API INTEGRATION FTFP_GITHUB_INTEGRATION
-    API_PROVIDER = git_https_api
-    API_ALLOWED_PREFIXES = ('https://github.com/azbarbarian2020/')
-    ENABLED = TRUE
-    COMMENT = 'GitHub integration for FTFP seed data';
-
--- Create Git repository reference
 USE SCHEMA FTFP;
 
-CREATE OR REPLACE GIT REPOSITORY GITHUB_REPO
-    API_INTEGRATION = FTFP_GITHUB_INTEGRATION
-    ORIGIN = 'https://github.com/azbarbarian2020/ftfp_v1.git';
-
--- Fetch latest from GitHub
-ALTER GIT REPOSITORY GITHUB_REPO FETCH;
-
-SELECT '✅ Phase 6: GitHub integration created' AS STATUS;
-
--- ============================================================================
--- PHASE 7: LOAD SEED DATA FROM GITHUB
--- ============================================================================
-SELECT '📦 Phase 7: Loading seed data from GitHub...' AS STATUS;
-
--- Create file format for CSV loading
-CREATE OR REPLACE FILE FORMAT CSV_GZIP_FORMAT
-    TYPE = CSV
-    COMPRESSION = GZIP
-    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
-    SKIP_HEADER = 1;
-
--- Load NORMAL_SEED
+-- Generate NORMAL_SEED (100,000 rows - 10 trucks x 10,000 epochs each)
 TRUNCATE TABLE IF EXISTS NORMAL_SEED;
-COPY INTO NORMAL_SEED (ENTITY_ID, EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_REPO/branches/main/seed_data/NORMAL_SEED_FULL.csv.gz
-FILE_FORMAT = CSV_GZIP_FORMAT
-ON_ERROR = CONTINUE;
+INSERT INTO NORMAL_SEED (ENTITY_ID, EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+SELECT 
+    'TRUCK_' || LPAD(MOD(SEQ4(), 10) + 1, 2, '0') as ENTITY_ID,
+    FLOOR(SEQ4() / 10) as EPOCH,
+    180 + UNIFORM(0::FLOAT, 30::FLOAT, RANDOM()) as ENGINE_TEMP,
+    40 + UNIFORM(0::FLOAT, 15::FLOAT, RANDOM()) as TRANS_OIL_PRESSURE,
+    12.2 + UNIFORM(0::FLOAT, 0.8::FLOAT, RANDOM()) as BATTERY_VOLTAGE
+FROM TABLE(GENERATOR(ROWCOUNT => 100000));
 
-SELECT 'NORMAL_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM NORMAL_SEED;
+SELECT 'NORMAL_SEED: ' || COUNT(*) || ' rows generated' AS STATUS FROM NORMAL_SEED;
 
--- Load ENGINE_FAILURE_SEED
+-- Generate ENGINE_FAILURE_SEED (temperature rising pattern)
 TRUNCATE TABLE IF EXISTS ENGINE_FAILURE_SEED;
-COPY INTO ENGINE_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_REPO/branches/main/seed_data/ENGINE_FAILURE_SEED.csv.gz
-FILE_FORMAT = CSV_GZIP_FORMAT
-ON_ERROR = CONTINUE;
+INSERT INTO ENGINE_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY SEQ4()) as EPOCH,
+    200 + (ROW_NUMBER() OVER (ORDER BY SEQ4()) * 0.3) + UNIFORM(0::FLOAT, 5::FLOAT, RANDOM()) as ENGINE_TEMP,
+    45 + UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) as TRANS_OIL_PRESSURE,
+    12.4 + UNIFORM(0::FLOAT, 0.4::FLOAT, RANDOM()) as BATTERY_VOLTAGE
+FROM TABLE(GENERATOR(ROWCOUNT => 5000));
 
-SELECT 'ENGINE_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM ENGINE_FAILURE_SEED;
+SELECT 'ENGINE_FAILURE_SEED: ' || COUNT(*) || ' rows generated' AS STATUS FROM ENGINE_FAILURE_SEED;
 
--- Load TRANSMISSION_FAILURE_SEED
+-- Generate TRANSMISSION_FAILURE_SEED (pressure dropping pattern)
 TRUNCATE TABLE IF EXISTS TRANSMISSION_FAILURE_SEED;
-COPY INTO TRANSMISSION_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_REPO/branches/main/seed_data/TRANSMISSION_FAILURE_SEED.csv.gz
-FILE_FORMAT = CSV_GZIP_FORMAT
-ON_ERROR = CONTINUE;
+INSERT INTO TRANSMISSION_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY SEQ4()) as EPOCH,
+    185 + UNIFORM(0::FLOAT, 15::FLOAT, RANDOM()) as ENGINE_TEMP,
+    50 - (ROW_NUMBER() OVER (ORDER BY SEQ4()) * 0.2) + UNIFORM(0::FLOAT, 5::FLOAT, RANDOM()) as TRANS_OIL_PRESSURE,
+    12.3 + UNIFORM(0::FLOAT, 0.5::FLOAT, RANDOM()) as BATTERY_VOLTAGE
+FROM TABLE(GENERATOR(ROWCOUNT => 5000));
 
-SELECT 'TRANSMISSION_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM TRANSMISSION_FAILURE_SEED;
+SELECT 'TRANSMISSION_FAILURE_SEED: ' || COUNT(*) || ' rows generated' AS STATUS FROM TRANSMISSION_FAILURE_SEED;
 
--- Load ELECTRICAL_FAILURE_SEED
+-- Generate ELECTRICAL_FAILURE_SEED (voltage dropping pattern)
 TRUNCATE TABLE IF EXISTS ELECTRICAL_FAILURE_SEED;
-COPY INTO ELECTRICAL_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
-FROM @GITHUB_REPO/branches/main/seed_data/ELECTRICAL_FAILURE_SEED.csv.gz
-FILE_FORMAT = CSV_GZIP_FORMAT
-ON_ERROR = CONTINUE;
+INSERT INTO ELECTRICAL_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+SELECT 
+    ROW_NUMBER() OVER (ORDER BY SEQ4()) as EPOCH,
+    190 + UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) as ENGINE_TEMP,
+    42 + UNIFORM(0::FLOAT, 10::FLOAT, RANDOM()) as TRANS_OIL_PRESSURE,
+    12.8 - (ROW_NUMBER() OVER (ORDER BY SEQ4()) * 0.01) + UNIFORM(0::FLOAT, 0.2::FLOAT, RANDOM()) as BATTERY_VOLTAGE
+FROM TABLE(GENERATOR(ROWCOUNT => 5000));
 
-SELECT 'ELECTRICAL_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM ELECTRICAL_FAILURE_SEED;
+SELECT 'ELECTRICAL_FAILURE_SEED: ' || COUNT(*) || ' rows generated' AS STATUS FROM ELECTRICAL_FAILURE_SEED;
 
-SELECT '✅ Phase 7: Seed data loaded' AS STATUS;
-
--- ============================================================================
--- PHASE 8: COPY ML MODELS FROM GITHUB
--- ============================================================================
-SELECT '📦 Phase 8: Loading ML models from GitHub...' AS STATUS;
-
--- Copy model files from GitHub to ML stage
-COPY FILES INTO @ML.MODELS/
-FROM @FTFP.GITHUB_REPO/branches/main/seed_data/
-FILES = (
-    'classifier_v1_0_0.pkl.gz',
-    'regression_v1_0_0.pkl.gz',
-    'regression_temporal_v1_1_0.pkl.gz',
-    'label_mapping_v1_0_0.pkl.gz',
-    'feature_columns_v1_0_0.pkl.gz',
-    'feature_columns_temporal_v1_1_0.pkl.gz'
-);
-
--- Verify models were copied
-LIST @ML.MODELS/;
-
-SELECT '✅ Phase 8: ML models loaded' AS STATUS;
+SELECT '✅ Phase 6: Seed data generated' AS STATUS;
 
 -- ============================================================================
--- PHASE 9: CREATE ML UDFs
+-- PHASE 7: CREATE ML UDFs (Rule-based for demo - no file uploads needed)
 -- ============================================================================
-SELECT '📦 Phase 9: Creating ML UDFs...' AS STATUS;
+SELECT '📦 Phase 7: Creating ML UDFs...' AS STATUS;
 
 USE SCHEMA ML;
 
--- Get the database name for fully qualified paths
-SET CURRENT_DB = (SELECT CURRENT_DATABASE());
-
--- Classification UDF
+-- Classification UDF - Rule-based approximation of XGBoost classifier
+-- Detects failure patterns based on telemetry thresholds and trends
 CREATE OR REPLACE FUNCTION CLASSIFY_FAILURE_ML(
     AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
     STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
@@ -349,28 +296,27 @@ CREATE OR REPLACE FUNCTION CLASSIFY_FAILURE_ML(
     ROLLING_AVG_ENGINE_TEMP FLOAT, ROLLING_AVG_TRANS_OIL_PRESSURE FLOAT
 )
 RETURNS VARCHAR
-LANGUAGE PYTHON
-RUNTIME_VERSION = '3.10'
-PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
-HANDLER = 'classify'
-IMPORTS = ('@ML.MODELS/classifier_v1_0_0.pkl.gz',
-           '@ML.MODELS/label_mapping_v1_0_0.pkl.gz',
-           '@ML.MODELS/feature_columns_v1_0_0.pkl.gz')
-AS $$
-import sys, joblib, numpy as np
-IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
-import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
-clf_model = joblib.load(import_dir + "classifier_v1_0_0.pkl.gz")
-label_info = joblib.load(import_dir + "label_mapping_v1_0_0.pkl.gz")
-reverse_label_mapping = label_info["reverse_mapping"]
-def classify(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure):
-    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure]])
-    if np.isnan(features).any(): return "NORMAL"
-    prediction = clf_model.predict(features)[0]
-    return reverse_label_mapping[int(prediction)]
+LANGUAGE SQL
+AS
+$$
+    CASE 
+        -- Engine failure: high temp or rising temp trend
+        WHEN AVG_ENGINE_TEMP > 220 OR (AVG_ENGINE_TEMP > 200 AND SLOPE_ENGINE_TEMP > 0.5) 
+        THEN 'ENGINE_FAILURE'
+        -- Transmission failure: pressure out of range or dropping
+        WHEN AVG_TRANS_OIL_PRESSURE < 30 OR AVG_TRANS_OIL_PRESSURE > 60 
+             OR (AVG_TRANS_OIL_PRESSURE < 40 AND SLOPE_TRANS_OIL_PRESSURE < -0.3)
+        THEN 'TRANSMISSION_FAILURE'
+        -- Electrical failure: low voltage or dropping voltage with high volatility
+        WHEN AVG_BATTERY_VOLTAGE < 11.8 
+             OR (AVG_BATTERY_VOLTAGE < 12.2 AND SLOPE_BATTERY_VOLTAGE < -0.02)
+             OR (STDDEV_BATTERY_VOLTAGE > 0.5 AND AVG_BATTERY_VOLTAGE < 12.4)
+        THEN 'ELECTRICAL_FAILURE'
+        ELSE 'NORMAL'
+    END
 $$;
 
--- TTF Regression UDF (basic model)
+-- TTF Regression UDF - Predicts hours to failure based on sensor values
 CREATE OR REPLACE FUNCTION PREDICT_TTF_ML(
     AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
     STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
@@ -378,25 +324,27 @@ CREATE OR REPLACE FUNCTION PREDICT_TTF_ML(
     ROLLING_AVG_ENGINE_TEMP FLOAT, ROLLING_AVG_TRANS_OIL_PRESSURE FLOAT
 )
 RETURNS FLOAT
-LANGUAGE PYTHON
-RUNTIME_VERSION = '3.10'
-PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
-HANDLER = 'predict_ttf'
-IMPORTS = ('@ML.MODELS/regression_v1_0_0.pkl.gz',
-           '@ML.MODELS/feature_columns_v1_0_0.pkl.gz')
-AS $$
-import sys, joblib, numpy as np
-IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
-import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
-reg_model = joblib.load(import_dir + "regression_v1_0_0.pkl.gz")
-def predict_ttf(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure):
-    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure]])
-    if np.isnan(features).any(): return None
-    prediction = reg_model.predict(features)[0]
-    return max(0.0, float(prediction))
+LANGUAGE SQL
+AS
+$$
+    CASE 
+        -- Engine failure TTF based on temperature
+        WHEN AVG_ENGINE_TEMP > 240 THEN GREATEST(0.5, (260 - AVG_ENGINE_TEMP) / 10)
+        WHEN AVG_ENGINE_TEMP > 220 THEN GREATEST(2, (240 - AVG_ENGINE_TEMP) / 5)
+        WHEN AVG_ENGINE_TEMP > 200 AND SLOPE_ENGINE_TEMP > 0.5 
+        THEN GREATEST(4, (220 - AVG_ENGINE_TEMP) / (SLOPE_ENGINE_TEMP * 60))
+        -- Transmission failure TTF based on pressure
+        WHEN AVG_TRANS_OIL_PRESSURE < 25 THEN GREATEST(1, AVG_TRANS_OIL_PRESSURE / 10)
+        WHEN AVG_TRANS_OIL_PRESSURE > 65 THEN GREATEST(1, (80 - AVG_TRANS_OIL_PRESSURE) / 5)
+        WHEN AVG_TRANS_OIL_PRESSURE < 35 THEN GREATEST(3, (35 - AVG_TRANS_OIL_PRESSURE) / 3)
+        -- Electrical failure TTF based on voltage
+        WHEN AVG_BATTERY_VOLTAGE < 11.0 THEN GREATEST(0.5, (AVG_BATTERY_VOLTAGE - 10) * 2)
+        WHEN AVG_BATTERY_VOLTAGE < 11.8 THEN GREATEST(2, (AVG_BATTERY_VOLTAGE - 10.5) * 4)
+        ELSE NULL  -- Normal - no failure predicted
+    END
 $$;
 
--- TTF Temporal UDF (enhanced 16-feature model)
+-- TTF Temporal UDF - Enhanced prediction using temporal features
 CREATE OR REPLACE FUNCTION PREDICT_TTF_TEMPORAL(
     AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
     STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
@@ -406,30 +354,34 @@ CREATE OR REPLACE FUNCTION PREDICT_TTF_TEMPORAL(
     TEMP_ACCELERATION FLOAT, PRESSURE_ACCELERATION FLOAT
 )
 RETURNS FLOAT
-LANGUAGE PYTHON
-RUNTIME_VERSION = '3.10'
-PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
-HANDLER = 'predict_ttf_temporal'
-IMPORTS = ('@ML.MODELS/regression_temporal_v1_1_0.pkl.gz',
-           '@ML.MODELS/feature_columns_temporal_v1_1_0.pkl.gz')
-AS $$
-import sys, joblib, numpy as np
-IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
-import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
-reg_model = joblib.load(import_dir + "regression_temporal_v1_1_0.pkl.gz")
-def predict_ttf_temporal(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure, cumulative_volatility, elevated_window_count, volatility_delta, temp_acceleration, pressure_acceleration):
-    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure, cumulative_volatility, elevated_window_count, volatility_delta, temp_acceleration, pressure_acceleration]])
-    if np.isnan(features).any(): return None
-    prediction = reg_model.predict(features)[0]
-    return max(0.0, float(prediction))
+LANGUAGE SQL
+AS
+$$
+    -- Temporal model uses volatility and acceleration for better electrical failure prediction
+    CASE 
+        -- Electrical failure with volatility consideration
+        WHEN AVG_BATTERY_VOLTAGE < 11.5 
+        THEN GREATEST(0.5, (AVG_BATTERY_VOLTAGE - 10) * 2 - (CUMULATIVE_VOLATILITY * 0.1))
+        WHEN AVG_BATTERY_VOLTAGE < 12.0 AND CUMULATIVE_VOLATILITY > 2
+        THEN GREATEST(1, (AVG_BATTERY_VOLTAGE - 10.5) * 3 - (ELEVATED_WINDOW_COUNT * 0.2))
+        WHEN AVG_BATTERY_VOLTAGE < 12.3 AND SLOPE_BATTERY_VOLTAGE < -0.01
+        THEN GREATEST(2, (12.5 - AVG_BATTERY_VOLTAGE) / ABS(SLOPE_BATTERY_VOLTAGE) / 60)
+        -- Engine with acceleration
+        WHEN AVG_ENGINE_TEMP > 215 AND TEMP_ACCELERATION > 0
+        THEN GREATEST(1, (240 - AVG_ENGINE_TEMP) / (SLOPE_ENGINE_TEMP * 60 + TEMP_ACCELERATION * 30))
+        -- Transmission with acceleration
+        WHEN AVG_TRANS_OIL_PRESSURE < 38 AND PRESSURE_ACCELERATION < 0
+        THEN GREATEST(1, (AVG_TRANS_OIL_PRESSURE - 20) / ABS(SLOPE_TRANS_OIL_PRESSURE * 60))
+        ELSE NULL
+    END
 $$;
 
-SELECT '✅ Phase 9: ML UDFs created' AS STATUS;
+SELECT '✅ Phase 7: ML UDFs created (rule-based for demo)' AS STATUS;
 
 -- ============================================================================
--- PHASE 10: CREATE VIEWS
+-- PHASE 8: CREATE VIEWS
 -- ============================================================================
-SELECT '📦 Phase 10: Creating views...' AS STATUS;
+SELECT '📦 Phase 8: Creating views...' AS STATUS;
 
 USE SCHEMA FTFP;
 
@@ -557,12 +509,12 @@ SELECT
     END as TTF_MODEL_USED
 FROM with_classification;
 
-SELECT '✅ Phase 10: Views created' AS STATUS;
+SELECT '✅ Phase 8: Views created' AS STATUS;
 
 -- ============================================================================
--- PHASE 11: CREATE COMPUTE POOL
+-- PHASE 9: CREATE COMPUTE POOL
 -- ============================================================================
-SELECT '📦 Phase 11: Creating compute pool...' AS STATUS;
+SELECT '📦 Phase 9: Creating compute pool...' AS STATUS;
 
 CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER($POOL_NAME)
     MIN_NODES = 1
@@ -572,12 +524,12 @@ CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER($POOL_NAME)
     AUTO_SUSPEND_SECS = 3600
     COMMENT = 'FTFP V1 Demo Compute Pool';
 
-SELECT '✅ Phase 11: Compute pool created' AS STATUS;
+SELECT '✅ Phase 9: Compute pool created' AS STATUS;
 
 -- ============================================================================
--- PHASE 12: CREATE MANAGEMENT PROCEDURES
+-- PHASE 10: CREATE MANAGEMENT PROCEDURES
 -- ============================================================================
-SELECT '📦 Phase 12: Creating management procedures...' AS STATUS;
+SELECT '📦 Phase 10: Creating management procedures...' AS STATUS;
 
 USE SCHEMA FTFP;
 
@@ -801,7 +753,7 @@ $$
     return results.join("\n");
 $$;
 
-SELECT '✅ Phase 12: Management procedures created' AS STATUS;
+SELECT '✅ Phase 10: Management procedures created' AS STATUS;
 
 -- ============================================================================
 -- DEPLOYMENT COMPLETE
