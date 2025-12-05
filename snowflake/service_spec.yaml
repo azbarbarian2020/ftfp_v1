@@ -1,0 +1,26 @@
+spec:
+  containers:
+  - name: ftfp-app
+    image: /combo_predict_clean/ftfp/ftfp_repo_clean/ftfp-react:v103-native-app
+    env:
+      SNOWFLAKE_WAREHOUSE: DEMO_WH
+      # The REFERENCE mechanism injects the fully qualified schema name
+      # Container will receive SNOWFLAKE_REFERENCE_DATA_SCHEMA_REF env var
+      # with value like "FTFP_APP.DATA_SCHEMA"
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+  endpoints:
+  - name: ftfp
+    port: 8000
+    public: true
+  # CRITICAL: This reference binds the app's data_schema to the container
+  # The container receives environment variable: SNOWFLAKE_REFERENCE_DATA_SCHEMA_REF
+  # Value will be the fully qualified name: "APP_DATABASE.DATA_SCHEMA"
+  references:
+  - name: data_schema_ref
+    object: data_schema

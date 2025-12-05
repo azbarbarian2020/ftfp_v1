@@ -1,0 +1,828 @@
+-- ============================================================================
+-- FTFP V1 - COMPLETE DEPLOYMENT SCRIPT
+-- ============================================================================
+-- Fleet Telemetry Failure Prediction - Full Environment Setup
+-- 
+-- This script creates a complete FTFP demo environment including:
+--   - Database, schemas, warehouse
+--   - All data tables and views
+--   - ML UDFs with real XGBoost models
+--   - Image repository for SPCS
+--   - Compute pool and service deployment procedures
+--   - GitHub integration for loading seed data
+--
+-- REQUIREMENTS:
+--   - ACCOUNTADMIN role (or equivalent privileges)
+--   - Enterprise Edition or higher (for SPCS)
+--   - Network access to github.com (for seed data)
+--
+-- USAGE:
+--   1. Run this entire script in a Snowflake worksheet
+--   2. Push Docker image to the created image repository
+--   3. Call FTFP_V1.FTFP.DEPLOY_SERVICE() to start the application
+--
+-- ============================================================================
+
+-- ============================================================================
+-- CONFIGURATION - Modify these if needed
+-- ============================================================================
+-- Note: These can be overridden by SET statements before running this script
+
+-- Use session variables if set, otherwise use defaults
+SET DB_NAME = COALESCE($DB_NAME, 'FTFP_V1');
+SET WH_NAME = COALESCE($WH_NAME, 'FTFP_V1_WH');
+SET POOL_NAME = COALESCE($POOL_NAME, 'FTFP_V1_POOL');
+
+-- ============================================================================
+-- PHASE 0: PREREQUISITES CHECK
+-- ============================================================================
+USE ROLE ACCOUNTADMIN;
+
+SELECT '🚀 Starting FTFP V1 Deployment...' AS STATUS;
+SELECT 'Database: ' || $DB_NAME AS CONFIG;
+SELECT 'Warehouse: ' || $WH_NAME AS CONFIG;
+SELECT 'Compute Pool: ' || $POOL_NAME AS CONFIG;
+
+-- ============================================================================
+-- PHASE 1: CREATE WAREHOUSE
+-- ============================================================================
+SELECT '📦 Phase 1: Creating warehouse...' AS STATUS;
+
+CREATE WAREHOUSE IF NOT EXISTS IDENTIFIER($WH_NAME)
+    WAREHOUSE_SIZE = 'X-SMALL'
+    AUTO_SUSPEND = 300
+    AUTO_RESUME = TRUE
+    INITIALLY_SUSPENDED = FALSE
+    COMMENT = 'FTFP V1 Demo Warehouse';
+
+USE WAREHOUSE IDENTIFIER($WH_NAME);
+
+SELECT '✅ Phase 1: Warehouse created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 2: CREATE DATABASE AND SCHEMAS
+-- ============================================================================
+SELECT '📦 Phase 2: Creating database and schemas...' AS STATUS;
+
+CREATE DATABASE IF NOT EXISTS IDENTIFIER($DB_NAME)
+    COMMENT = 'Fleet Telemetry Failure Prediction V1 Demo';
+
+USE DATABASE IDENTIFIER($DB_NAME);
+
+-- Main data schema
+CREATE SCHEMA IF NOT EXISTS FTFP
+    COMMENT = 'Main data tables and views';
+
+-- ML resources schema
+CREATE SCHEMA IF NOT EXISTS ML
+    COMMENT = 'ML models and UDFs';
+
+-- Image repository schema
+CREATE SCHEMA IF NOT EXISTS IMAGES
+    COMMENT = 'Container image repository';
+
+-- Service schema
+CREATE SCHEMA IF NOT EXISTS SERVICE
+    COMMENT = 'SPCS service';
+
+SELECT '✅ Phase 2: Database and schemas created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 3: CREATE DATA TABLES
+-- ============================================================================
+SELECT '📦 Phase 3: Creating data tables...' AS STATUS;
+
+USE SCHEMA FTFP;
+
+-- Main telemetry table
+CREATE TABLE IF NOT EXISTS TELEMETRY (
+    TIMESTAMP TIMESTAMP_NTZ(9),
+    ENTITY_ID VARCHAR(100),
+    ENGINE_TEMP FLOAT,
+    TRANS_OIL_PRESSURE FLOAT,
+    BATTERY_VOLTAGE FLOAT,
+    STATUS VARCHAR(20) DEFAULT 'NORMAL'
+);
+
+-- Seed data tables
+CREATE TABLE IF NOT EXISTS NORMAL_SEED (
+    ENTITY_ID VARCHAR(100),
+    EPOCH NUMBER(38,0),
+    ENGINE_TEMP FLOAT,
+    TRANS_OIL_PRESSURE FLOAT,
+    BATTERY_VOLTAGE FLOAT
+);
+
+CREATE TABLE IF NOT EXISTS ENGINE_FAILURE_SEED (
+    EPOCH NUMBER(38,0),
+    ENGINE_TEMP FLOAT,
+    TRANS_OIL_PRESSURE FLOAT,
+    BATTERY_VOLTAGE FLOAT
+);
+
+CREATE TABLE IF NOT EXISTS TRANSMISSION_FAILURE_SEED (
+    EPOCH NUMBER(38,0),
+    ENGINE_TEMP FLOAT,
+    TRANS_OIL_PRESSURE FLOAT,
+    BATTERY_VOLTAGE FLOAT
+);
+
+CREATE TABLE IF NOT EXISTS ELECTRICAL_FAILURE_SEED (
+    EPOCH NUMBER(38,0),
+    ENGINE_TEMP FLOAT,
+    TRANS_OIL_PRESSURE FLOAT,
+    BATTERY_VOLTAGE FLOAT
+);
+
+-- State tracking tables
+CREATE TABLE IF NOT EXISTS STREAM_STATE (
+    STREAM_NAME VARCHAR(100) NOT NULL PRIMARY KEY,
+    START_TS TIMESTAMP_NTZ(9),
+    NEXT_EPOCH NUMBER(38,0),
+    STEP_SECONDS NUMBER(38,0),
+    LAST_UPDATED TIMESTAMP_NTZ(9)
+);
+
+CREATE TABLE IF NOT EXISTS FAILURE_CONFIG (
+    ENTITY_ID VARCHAR(100) NOT NULL PRIMARY KEY,
+    FAILURE_TYPE VARCHAR(50),
+    ENABLED BOOLEAN,
+    EFFECTIVE_FROM_EPOCH NUMBER(38,0),
+    FAILURE_NEXT_EPOCH NUMBER(38,0),
+    CREATED_AT TIMESTAMP_NTZ(9),
+    UPDATED_AT TIMESTAMP_NTZ(9)
+);
+
+-- ML cache tables
+CREATE TABLE IF NOT EXISTS PREDICTION_CACHE (
+    ENTITY_ID VARCHAR(100) NOT NULL PRIMARY KEY,
+    PREDICTION_TIMESTAMP TIMESTAMP_NTZ(9) NOT NULL,
+    PREDICTED_FAILURE_TYPE VARCHAR(50),
+    PREDICTED_HOURS_TO_FAILURE FLOAT,
+    TTF_MODEL_USED VARCHAR(50),
+    CURRENT_ENGINE_TEMP FLOAT,
+    CURRENT_TRANS_PRESSURE FLOAT,
+    CURRENT_BATTERY_VOLTAGE FLOAT,
+    LAST_UPDATED TIMESTAMP_NTZ(9)
+);
+
+CREATE TABLE IF NOT EXISTS ACTIVE_FAILURES (
+    ENTITY_ID VARCHAR(100) NOT NULL PRIMARY KEY,
+    FAILURE_TYPE VARCHAR(50),
+    STARTED_AT TIMESTAMP_NTZ(9),
+    EPOCH_STARTED NUMBER(38,0),
+    LAST_UPDATED TIMESTAMP_NTZ(9)
+);
+
+CREATE TABLE IF NOT EXISTS FIRST_FAILURE_MARKERS (
+    ENTITY_ID VARCHAR(100) NOT NULL PRIMARY KEY,
+    FIRST_FAILURE_TIME TIMESTAMP_NTZ(9),
+    FAILURE_TYPE VARCHAR(50),
+    LAST_UPDATED TIMESTAMP_NTZ(9)
+);
+
+-- Training data table (for reference)
+CREATE TABLE IF NOT EXISTS TRAINING_TBL (
+    TIMESTAMP TIMESTAMP_NTZ(9),
+    ENTITY_ID VARCHAR(100),
+    ENGINE_TEMP FLOAT,
+    TRANS_OIL_PRESSURE FLOAT,
+    BATTERY_VOLTAGE FLOAT,
+    FAILURE_TYPE VARCHAR(50),
+    TIME_TO_FAILURE FLOAT,
+    FAILURE_FLAG NUMBER(38,0)
+);
+
+-- Initialize stream state
+INSERT INTO STREAM_STATE (STREAM_NAME, START_TS, STEP_SECONDS, NEXT_EPOCH, LAST_UPDATED)
+SELECT 'NORMAL_TO_TELEMETRY', CURRENT_TIMESTAMP()::TIMESTAMP_NTZ, 5, 0, CURRENT_TIMESTAMP()
+WHERE NOT EXISTS (SELECT 1 FROM STREAM_STATE WHERE STREAM_NAME = 'NORMAL_TO_TELEMETRY');
+
+SELECT '✅ Phase 3: Data tables created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 4: CREATE IMAGE REPOSITORY
+-- ============================================================================
+SELECT '📦 Phase 4: Creating image repository...' AS STATUS;
+
+USE SCHEMA IMAGES;
+
+CREATE IMAGE REPOSITORY IF NOT EXISTS FTFP_REPO
+    COMMENT = 'FTFP container images';
+
+-- Show repository URL for user
+SHOW IMAGE REPOSITORIES IN SCHEMA IMAGES;
+
+SELECT '✅ Phase 4: Image repository created' AS STATUS;
+SELECT '📋 Push your Docker image to: ' || "repository_url" || '/ftfp_v1:v1' AS INSTRUCTIONS
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
+WHERE "name" = 'FTFP_REPO';
+
+-- ============================================================================
+-- PHASE 5: CREATE ML STAGE AND LOAD MODELS
+-- ============================================================================
+SELECT '📦 Phase 5: Creating ML resources...' AS STATUS;
+
+USE SCHEMA ML;
+
+-- Create stage for ML models
+CREATE STAGE IF NOT EXISTS MODELS
+    DIRECTORY = (ENABLE = TRUE)
+    COMMENT = 'XGBoost ML model files';
+
+-- Note: Model files will be loaded via GitHub integration or manual upload
+
+SELECT '✅ Phase 5: ML stage created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 6: CREATE GITHUB INTEGRATION FOR SEED DATA
+-- ============================================================================
+SELECT '📦 Phase 6: Setting up GitHub integration...' AS STATUS;
+
+-- Create API integration for GitHub
+CREATE OR REPLACE API INTEGRATION FTFP_GITHUB_INTEGRATION
+    API_PROVIDER = git_https_api
+    API_ALLOWED_PREFIXES = ('https://github.com/azbarbarian2020/')
+    ENABLED = TRUE
+    COMMENT = 'GitHub integration for FTFP seed data';
+
+-- Create Git repository reference
+USE SCHEMA FTFP;
+
+CREATE OR REPLACE GIT REPOSITORY GITHUB_REPO
+    API_INTEGRATION = FTFP_GITHUB_INTEGRATION
+    ORIGIN = 'https://github.com/azbarbarian2020/ftfp_v1.git';
+
+-- Fetch latest from GitHub
+ALTER GIT REPOSITORY GITHUB_REPO FETCH;
+
+SELECT '✅ Phase 6: GitHub integration created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 7: LOAD SEED DATA FROM GITHUB
+-- ============================================================================
+SELECT '📦 Phase 7: Loading seed data from GitHub...' AS STATUS;
+
+-- Create file format for CSV loading
+CREATE OR REPLACE FILE FORMAT CSV_GZIP_FORMAT
+    TYPE = CSV
+    COMPRESSION = GZIP
+    FIELD_OPTIONALLY_ENCLOSED_BY = '"'
+    SKIP_HEADER = 1;
+
+-- Load NORMAL_SEED
+TRUNCATE TABLE IF EXISTS NORMAL_SEED;
+COPY INTO NORMAL_SEED (ENTITY_ID, EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+FROM @GITHUB_REPO/branches/main/seed_data/NORMAL_SEED_FULL.csv.gz
+FILE_FORMAT = CSV_GZIP_FORMAT
+ON_ERROR = CONTINUE;
+
+SELECT 'NORMAL_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM NORMAL_SEED;
+
+-- Load ENGINE_FAILURE_SEED
+TRUNCATE TABLE IF EXISTS ENGINE_FAILURE_SEED;
+COPY INTO ENGINE_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+FROM @GITHUB_REPO/branches/main/seed_data/ENGINE_FAILURE_SEED.csv.gz
+FILE_FORMAT = CSV_GZIP_FORMAT
+ON_ERROR = CONTINUE;
+
+SELECT 'ENGINE_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM ENGINE_FAILURE_SEED;
+
+-- Load TRANSMISSION_FAILURE_SEED
+TRUNCATE TABLE IF EXISTS TRANSMISSION_FAILURE_SEED;
+COPY INTO TRANSMISSION_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+FROM @GITHUB_REPO/branches/main/seed_data/TRANSMISSION_FAILURE_SEED.csv.gz
+FILE_FORMAT = CSV_GZIP_FORMAT
+ON_ERROR = CONTINUE;
+
+SELECT 'TRANSMISSION_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM TRANSMISSION_FAILURE_SEED;
+
+-- Load ELECTRICAL_FAILURE_SEED
+TRUNCATE TABLE IF EXISTS ELECTRICAL_FAILURE_SEED;
+COPY INTO ELECTRICAL_FAILURE_SEED (EPOCH, ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE)
+FROM @GITHUB_REPO/branches/main/seed_data/ELECTRICAL_FAILURE_SEED.csv.gz
+FILE_FORMAT = CSV_GZIP_FORMAT
+ON_ERROR = CONTINUE;
+
+SELECT 'ELECTRICAL_FAILURE_SEED: ' || COUNT(*) || ' rows loaded' AS STATUS FROM ELECTRICAL_FAILURE_SEED;
+
+SELECT '✅ Phase 7: Seed data loaded' AS STATUS;
+
+-- ============================================================================
+-- PHASE 8: COPY ML MODELS FROM GITHUB
+-- ============================================================================
+SELECT '📦 Phase 8: Loading ML models from GitHub...' AS STATUS;
+
+-- Copy model files from GitHub to ML stage
+COPY FILES INTO @ML.MODELS/
+FROM @FTFP.GITHUB_REPO/branches/main/seed_data/
+FILES = (
+    'classifier_v1_0_0.pkl.gz',
+    'regression_v1_0_0.pkl.gz',
+    'regression_temporal_v1_1_0.pkl.gz',
+    'label_mapping_v1_0_0.pkl.gz',
+    'feature_columns_v1_0_0.pkl.gz',
+    'feature_columns_temporal_v1_1_0.pkl.gz'
+);
+
+-- Verify models were copied
+LIST @ML.MODELS/;
+
+SELECT '✅ Phase 8: ML models loaded' AS STATUS;
+
+-- ============================================================================
+-- PHASE 9: CREATE ML UDFs
+-- ============================================================================
+SELECT '📦 Phase 9: Creating ML UDFs...' AS STATUS;
+
+USE SCHEMA ML;
+
+-- Get the database name for fully qualified paths
+SET CURRENT_DB = (SELECT CURRENT_DATABASE());
+
+-- Classification UDF
+CREATE OR REPLACE FUNCTION CLASSIFY_FAILURE_ML(
+    AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
+    STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
+    SLOPE_ENGINE_TEMP FLOAT, SLOPE_TRANS_OIL_PRESSURE FLOAT, SLOPE_BATTERY_VOLTAGE FLOAT,
+    ROLLING_AVG_ENGINE_TEMP FLOAT, ROLLING_AVG_TRANS_OIL_PRESSURE FLOAT
+)
+RETURNS VARCHAR
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
+HANDLER = 'classify'
+IMPORTS = ('@ML.MODELS/classifier_v1_0_0.pkl.gz',
+           '@ML.MODELS/label_mapping_v1_0_0.pkl.gz',
+           '@ML.MODELS/feature_columns_v1_0_0.pkl.gz')
+AS $$
+import sys, joblib, numpy as np
+IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
+import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
+clf_model = joblib.load(import_dir + "classifier_v1_0_0.pkl.gz")
+label_info = joblib.load(import_dir + "label_mapping_v1_0_0.pkl.gz")
+reverse_label_mapping = label_info["reverse_mapping"]
+def classify(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure):
+    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure]])
+    if np.isnan(features).any(): return "NORMAL"
+    prediction = clf_model.predict(features)[0]
+    return reverse_label_mapping[int(prediction)]
+$$;
+
+-- TTF Regression UDF (basic model)
+CREATE OR REPLACE FUNCTION PREDICT_TTF_ML(
+    AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
+    STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
+    SLOPE_ENGINE_TEMP FLOAT, SLOPE_TRANS_OIL_PRESSURE FLOAT, SLOPE_BATTERY_VOLTAGE FLOAT,
+    ROLLING_AVG_ENGINE_TEMP FLOAT, ROLLING_AVG_TRANS_OIL_PRESSURE FLOAT
+)
+RETURNS FLOAT
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
+HANDLER = 'predict_ttf'
+IMPORTS = ('@ML.MODELS/regression_v1_0_0.pkl.gz',
+           '@ML.MODELS/feature_columns_v1_0_0.pkl.gz')
+AS $$
+import sys, joblib, numpy as np
+IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
+import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
+reg_model = joblib.load(import_dir + "regression_v1_0_0.pkl.gz")
+def predict_ttf(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure):
+    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure]])
+    if np.isnan(features).any(): return None
+    prediction = reg_model.predict(features)[0]
+    return max(0.0, float(prediction))
+$$;
+
+-- TTF Temporal UDF (enhanced 16-feature model)
+CREATE OR REPLACE FUNCTION PREDICT_TTF_TEMPORAL(
+    AVG_ENGINE_TEMP FLOAT, AVG_TRANS_OIL_PRESSURE FLOAT, AVG_BATTERY_VOLTAGE FLOAT,
+    STDDEV_BATTERY_VOLTAGE FLOAT, STDDEV_ENGINE_TEMP FLOAT, STDDEV_TRANS_OIL_PRESSURE FLOAT,
+    SLOPE_ENGINE_TEMP FLOAT, SLOPE_TRANS_OIL_PRESSURE FLOAT, SLOPE_BATTERY_VOLTAGE FLOAT,
+    ROLLING_AVG_ENGINE_TEMP FLOAT, ROLLING_AVG_TRANS_OIL_PRESSURE FLOAT,
+    CUMULATIVE_VOLATILITY FLOAT, ELEVATED_WINDOW_COUNT FLOAT, VOLATILITY_DELTA FLOAT,
+    TEMP_ACCELERATION FLOAT, PRESSURE_ACCELERATION FLOAT
+)
+RETURNS FLOAT
+LANGUAGE PYTHON
+RUNTIME_VERSION = '3.10'
+PACKAGES = ('xgboost','numpy','pandas','scikit-learn','joblib')
+HANDLER = 'predict_ttf_temporal'
+IMPORTS = ('@ML.MODELS/regression_temporal_v1_1_0.pkl.gz',
+           '@ML.MODELS/feature_columns_temporal_v1_1_0.pkl.gz')
+AS $$
+import sys, joblib, numpy as np
+IMPORT_DIRECTORY_NAME = "snowflake_import_directory"
+import_dir = sys._xoptions[IMPORT_DIRECTORY_NAME]
+reg_model = joblib.load(import_dir + "regression_temporal_v1_1_0.pkl.gz")
+def predict_ttf_temporal(avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure, cumulative_volatility, elevated_window_count, volatility_delta, temp_acceleration, pressure_acceleration):
+    features = np.array([[avg_engine_temp, avg_trans_oil_pressure, avg_battery_voltage, stddev_battery_voltage, stddev_engine_temp, stddev_trans_oil_pressure, slope_engine_temp, slope_trans_oil_pressure, slope_battery_voltage, rolling_avg_engine_temp, rolling_avg_trans_oil_pressure, cumulative_volatility, elevated_window_count, volatility_delta, temp_acceleration, pressure_acceleration]])
+    if np.isnan(features).any(): return None
+    prediction = reg_model.predict(features)[0]
+    return max(0.0, float(prediction))
+$$;
+
+SELECT '✅ Phase 9: ML UDFs created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 10: CREATE VIEWS
+-- ============================================================================
+SELECT '📦 Phase 10: Creating views...' AS STATUS;
+
+USE SCHEMA FTFP;
+
+-- 5-minute aggregation view for charting
+CREATE OR REPLACE VIEW TELEMETRY_5MIN_AGG AS
+SELECT
+    TIME_SLICE(TIMESTAMP, 5, 'MINUTE', 'END') as BUCKET_TIME,
+    ENTITY_ID,
+    AVG(ENGINE_TEMP) as AVG_ENGINE_TEMP,
+    AVG(TRANS_OIL_PRESSURE) as AVG_TRANS_OIL_PRESSURE,
+    AVG(BATTERY_VOLTAGE) as AVG_BATTERY_VOLTAGE,
+    MIN(BATTERY_VOLTAGE) as MIN_BATTERY_VOLTAGE,
+    MAX(BATTERY_VOLTAGE) as MAX_BATTERY_VOLTAGE,
+    STDDEV(BATTERY_VOLTAGE) as STDDEV_BATTERY_VOLTAGE_WITHIN_BUCKET,
+    COUNT(*) as POINT_COUNT,
+    MAX(TIMESTAMP) as LATEST_TIMESTAMP
+FROM TELEMETRY
+GROUP BY TIME_SLICE(TIMESTAMP, 5, 'MINUTE', 'END'), ENTITY_ID;
+
+-- Feature engineering view for ML
+CREATE OR REPLACE VIEW FEATURE_ENGINEERING_VIEW_TEMPORAL AS
+WITH time_windows AS (
+    SELECT
+        ENTITY_ID, TIMESTAMP, TIME_SLICE(TIMESTAMP, 5, 'MINUTE', 'START') as WINDOW_START,
+        ENGINE_TEMP, TRANS_OIL_PRESSURE, BATTERY_VOLTAGE
+    FROM TELEMETRY
+),
+aggregated_features AS (
+    SELECT
+        ENTITY_ID, WINDOW_START, MAX(TIMESTAMP) as FEATURE_TIMESTAMP,
+        AVG(ENGINE_TEMP) as AVG_ENGINE_TEMP,
+        AVG(TRANS_OIL_PRESSURE) as AVG_TRANS_OIL_PRESSURE,
+        AVG(BATTERY_VOLTAGE) as AVG_BATTERY_VOLTAGE,
+        STDDEV(BATTERY_VOLTAGE) as STDDEV_BATTERY_VOLTAGE,
+        STDDEV(ENGINE_TEMP) as STDDEV_ENGINE_TEMP,
+        STDDEV(TRANS_OIL_PRESSURE) as STDDEV_TRANS_OIL_PRESSURE,
+        COUNT(*) as RECORD_COUNT
+    FROM time_windows
+    GROUP BY ENTITY_ID, WINDOW_START
+),
+slope_calculations AS (
+    SELECT a.*,
+        (a.AVG_ENGINE_TEMP - LAG(a.AVG_ENGINE_TEMP) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) / 5.0 as SLOPE_ENGINE_TEMP,
+        (a.AVG_TRANS_OIL_PRESSURE - LAG(a.AVG_TRANS_OIL_PRESSURE) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) / 5.0 as SLOPE_TRANS_OIL_PRESSURE,
+        (a.AVG_BATTERY_VOLTAGE - LAG(a.AVG_BATTERY_VOLTAGE) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) / 5.0 as SLOPE_BATTERY_VOLTAGE,
+        AVG(a.AVG_ENGINE_TEMP) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as ROLLING_AVG_ENGINE_TEMP,
+        AVG(a.AVG_TRANS_OIL_PRESSURE) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP ROWS BETWEEN 2 PRECEDING AND CURRENT ROW) as ROLLING_AVG_TRANS_OIL_PRESSURE,
+        SUM(a.STDDEV_BATTERY_VOLTAGE) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as CUMULATIVE_VOLATILITY,
+        SUM(CASE WHEN a.STDDEV_BATTERY_VOLTAGE > 0.7 THEN 1 ELSE 0 END) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as ELEVATED_WINDOW_COUNT,
+        (a.STDDEV_BATTERY_VOLTAGE - LAG(a.STDDEV_BATTERY_VOLTAGE) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) as VOLATILITY_DELTA,
+        (a.AVG_ENGINE_TEMP - LAG(a.AVG_ENGINE_TEMP) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) -
+        (LAG(a.AVG_ENGINE_TEMP) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP) - LAG(a.AVG_ENGINE_TEMP, 2) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) as TEMP_ACCELERATION,
+        (a.AVG_TRANS_OIL_PRESSURE - LAG(a.AVG_TRANS_OIL_PRESSURE) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) -
+        (LAG(a.AVG_TRANS_OIL_PRESSURE) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP) - LAG(a.AVG_TRANS_OIL_PRESSURE, 2) OVER (PARTITION BY a.ENTITY_ID ORDER BY a.FEATURE_TIMESTAMP)) as PRESSURE_ACCELERATION
+    FROM aggregated_features a
+)
+SELECT
+    ENTITY_ID, FEATURE_TIMESTAMP, AVG_ENGINE_TEMP, AVG_TRANS_OIL_PRESSURE, AVG_BATTERY_VOLTAGE,
+    STDDEV_BATTERY_VOLTAGE, STDDEV_ENGINE_TEMP, STDDEV_TRANS_OIL_PRESSURE,
+    COALESCE(SLOPE_ENGINE_TEMP, 0) as SLOPE_ENGINE_TEMP,
+    COALESCE(SLOPE_TRANS_OIL_PRESSURE, 0) as SLOPE_TRANS_OIL_PRESSURE,
+    COALESCE(SLOPE_BATTERY_VOLTAGE, 0) as SLOPE_BATTERY_VOLTAGE,
+    ROLLING_AVG_ENGINE_TEMP, ROLLING_AVG_TRANS_OIL_PRESSURE,
+    COALESCE(CUMULATIVE_VOLATILITY, 0) as CUMULATIVE_VOLATILITY,
+    COALESCE(ELEVATED_WINDOW_COUNT, 0) as ELEVATED_WINDOW_COUNT,
+    COALESCE(VOLATILITY_DELTA, 0) as VOLATILITY_DELTA,
+    COALESCE(TEMP_ACCELERATION, 0) as TEMP_ACCELERATION,
+    COALESCE(PRESSURE_ACCELERATION, 0) as PRESSURE_ACCELERATION
+FROM slope_calculations
+WHERE RECORD_COUNT >= 12;
+
+-- ML Prediction view (hybrid TTF model selection)
+CREATE OR REPLACE VIEW ENHANCED_PREDICTIVE_VIEW_HYBRID_TTF AS
+WITH latest_features AS (
+    SELECT
+        FEATURE_TIMESTAMP as PREDICTION_TIMESTAMP, ENTITY_ID,
+        AVG_ENGINE_TEMP, AVG_TRANS_OIL_PRESSURE, AVG_BATTERY_VOLTAGE,
+        STDDEV_BATTERY_VOLTAGE, STDDEV_ENGINE_TEMP, STDDEV_TRANS_OIL_PRESSURE,
+        SLOPE_ENGINE_TEMP, SLOPE_TRANS_OIL_PRESSURE, SLOPE_BATTERY_VOLTAGE,
+        ROLLING_AVG_ENGINE_TEMP, ROLLING_AVG_TRANS_OIL_PRESSURE,
+        CUMULATIVE_VOLATILITY, ELEVATED_WINDOW_COUNT, VOLATILITY_DELTA,
+        TEMP_ACCELERATION, PRESSURE_ACCELERATION,
+        ROW_NUMBER() OVER (PARTITION BY ENTITY_ID ORDER BY FEATURE_TIMESTAMP DESC) as rn
+    FROM FEATURE_ENGINEERING_VIEW_TEMPORAL
+),
+with_classification AS (
+    SELECT *,
+        ML.CLASSIFY_FAILURE_ML(
+            AVG_ENGINE_TEMP, AVG_TRANS_OIL_PRESSURE, AVG_BATTERY_VOLTAGE,
+            STDDEV_BATTERY_VOLTAGE, STDDEV_ENGINE_TEMP, STDDEV_TRANS_OIL_PRESSURE,
+            SLOPE_ENGINE_TEMP, SLOPE_TRANS_OIL_PRESSURE, SLOPE_BATTERY_VOLTAGE,
+            ROLLING_AVG_ENGINE_TEMP, ROLLING_AVG_TRANS_OIL_PRESSURE
+        ) as PREDICTED_FAILURE_TYPE
+    FROM latest_features WHERE rn = 1
+)
+SELECT
+    PREDICTION_TIMESTAMP, ENTITY_ID,
+    AVG_ENGINE_TEMP as CURRENT_ENGINE_TEMP,
+    AVG_TRANS_OIL_PRESSURE as CURRENT_TRANS_PRESSURE,
+    AVG_BATTERY_VOLTAGE as CURRENT_BATTERY_VOLTAGE,
+    PREDICTED_FAILURE_TYPE,
+    CASE
+        WHEN PREDICTED_FAILURE_TYPE = 'ELECTRICAL_FAILURE'
+        THEN ML.PREDICT_TTF_TEMPORAL(
+            AVG_ENGINE_TEMP, AVG_TRANS_OIL_PRESSURE, AVG_BATTERY_VOLTAGE,
+            STDDEV_BATTERY_VOLTAGE, STDDEV_ENGINE_TEMP, STDDEV_TRANS_OIL_PRESSURE,
+            SLOPE_ENGINE_TEMP, SLOPE_TRANS_OIL_PRESSURE, SLOPE_BATTERY_VOLTAGE,
+            ROLLING_AVG_ENGINE_TEMP, ROLLING_AVG_TRANS_OIL_PRESSURE,
+            CUMULATIVE_VOLATILITY, ELEVATED_WINDOW_COUNT, VOLATILITY_DELTA,
+            TEMP_ACCELERATION, PRESSURE_ACCELERATION
+        )
+        WHEN PREDICTED_FAILURE_TYPE IN ('ENGINE_FAILURE', 'TRANSMISSION_FAILURE')
+        THEN ML.PREDICT_TTF_ML(
+            AVG_ENGINE_TEMP, AVG_TRANS_OIL_PRESSURE, AVG_BATTERY_VOLTAGE,
+            STDDEV_BATTERY_VOLTAGE, STDDEV_ENGINE_TEMP, STDDEV_TRANS_OIL_PRESSURE,
+            SLOPE_ENGINE_TEMP, SLOPE_TRANS_OIL_PRESSURE, SLOPE_BATTERY_VOLTAGE,
+            ROLLING_AVG_ENGINE_TEMP, ROLLING_AVG_TRANS_OIL_PRESSURE
+        )
+        ELSE NULL
+    END as PREDICTED_HOURS_TO_FAILURE,
+    CASE
+        WHEN PREDICTED_FAILURE_TYPE = 'ELECTRICAL_FAILURE' THEN 'temporal_16_features'
+        WHEN PREDICTED_FAILURE_TYPE IN ('ENGINE_FAILURE', 'TRANSMISSION_FAILURE') THEN 'basic_11_features'
+        ELSE 'none'
+    END as TTF_MODEL_USED
+FROM with_classification;
+
+SELECT '✅ Phase 10: Views created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 11: CREATE COMPUTE POOL
+-- ============================================================================
+SELECT '📦 Phase 11: Creating compute pool...' AS STATUS;
+
+CREATE COMPUTE POOL IF NOT EXISTS IDENTIFIER($POOL_NAME)
+    MIN_NODES = 1
+    MAX_NODES = 1
+    INSTANCE_FAMILY = CPU_X64_XS
+    AUTO_RESUME = TRUE
+    AUTO_SUSPEND_SECS = 3600
+    COMMENT = 'FTFP V1 Demo Compute Pool';
+
+SELECT '✅ Phase 11: Compute pool created' AS STATUS;
+
+-- ============================================================================
+-- PHASE 12: CREATE MANAGEMENT PROCEDURES
+-- ============================================================================
+SELECT '📦 Phase 12: Creating management procedures...' AS STATUS;
+
+USE SCHEMA FTFP;
+
+-- Service deployment procedure
+CREATE OR REPLACE PROCEDURE DEPLOY_SERVICE()
+RETURNS VARCHAR
+LANGUAGE JAVASCRIPT
+EXECUTE AS CALLER
+AS
+$$
+    var results = [];
+    
+    // Get current database name
+    var dbResult = snowflake.execute({sqlText: "SELECT CURRENT_DATABASE()"});
+    dbResult.next();
+    var dbName = dbResult.getColumnValue(1);
+    
+    // Get image repository URL
+    var repoResult = snowflake.execute({sqlText: `SHOW IMAGE REPOSITORIES IN SCHEMA ${dbName}.IMAGES`});
+    repoResult.next();
+    var repoUrl = repoResult.getColumnValue('repository_url');
+    var imagePath = `/${dbName.toLowerCase()}/images/ftfp_repo/ftfp_v1:v1`;
+    
+    results.push("Database: " + dbName);
+    results.push("Image path: " + imagePath);
+    
+    // Build service spec
+    var serviceSpec = 
+`spec:
+  containers:
+  - name: ftfp-app
+    image: ${imagePath}
+    env:
+      SNOWFLAKE_WAREHOUSE: ${dbName}_WH
+      SNOWFLAKE_DATABASE: ${dbName}
+      SNOWFLAKE_SCHEMA: FTFP
+    resources:
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+      limits:
+        cpu: 1
+        memory: 2Gi
+  endpoints:
+  - name: ftfp
+    port: 8000
+    public: true`;
+    
+    // Drop existing service if exists
+    try {
+        snowflake.execute({sqlText: `DROP SERVICE IF EXISTS ${dbName}.SERVICE.FTFP_SERVICE`});
+        results.push("Dropped existing service");
+    } catch(e) {}
+    
+    // Create service
+    try {
+        var createSql = `CREATE SERVICE ${dbName}.SERVICE.FTFP_SERVICE
+            IN COMPUTE POOL ${dbName}_POOL
+            FROM SPECIFICATION '${serviceSpec.replace(/'/g, "''")}'`;
+        snowflake.execute({sqlText: createSql});
+        results.push("Service created successfully");
+    } catch(e) {
+        results.push("Service creation error: " + e);
+        return results.join("\n");
+    }
+    
+    results.push("");
+    results.push("Service deployed! Check status with:");
+    results.push("  CALL " + dbName + ".FTFP.CHECK_SERVICE_STATUS();");
+    
+    return results.join("\n");
+$$;
+
+-- Service status check procedure
+CREATE OR REPLACE PROCEDURE CHECK_SERVICE_STATUS()
+RETURNS VARCHAR
+LANGUAGE JAVASCRIPT
+EXECUTE AS CALLER
+AS
+$$
+    var results = [];
+    var dbResult = snowflake.execute({sqlText: "SELECT CURRENT_DATABASE()"});
+    dbResult.next();
+    var dbName = dbResult.getColumnValue(1);
+    
+    // Check service status
+    try {
+        var stmt = snowflake.execute({sqlText: `SHOW SERVICES IN SCHEMA ${dbName}.SERVICE`});
+        results.push("=== Services ===");
+        while(stmt.next()) {
+            results.push("Service: " + stmt.getColumnValue('name') + ", Status: " + stmt.getColumnValue('status'));
+        }
+    } catch(e) {
+        results.push("Error checking services: " + e);
+    }
+    
+    // Check endpoints
+    try {
+        var stmt = snowflake.execute({sqlText: `SHOW ENDPOINTS IN SERVICE ${dbName}.SERVICE.FTFP_SERVICE`});
+        results.push("");
+        results.push("=== Endpoints ===");
+        while(stmt.next()) {
+            results.push("Endpoint: " + stmt.getColumnValue('name') + 
+                        ", URL: https://" + stmt.getColumnValue('ingress_url'));
+        }
+    } catch(e) {
+        results.push("Endpoint check: " + e);
+    }
+    
+    return results.join("\n");
+$$;
+
+-- Get service logs procedure
+CREATE OR REPLACE PROCEDURE GET_SERVICE_LOGS()
+RETURNS VARCHAR
+LANGUAGE JAVASCRIPT
+EXECUTE AS CALLER
+AS
+$$
+    var dbResult = snowflake.execute({sqlText: "SELECT CURRENT_DATABASE()"});
+    dbResult.next();
+    var dbName = dbResult.getColumnValue(1);
+    
+    try {
+        var stmt = snowflake.execute({sqlText: `SELECT SYSTEM$GET_SERVICE_LOGS('${dbName}.SERVICE.FTFP_SERVICE', 0, 'ftfp-app')`});
+        stmt.next();
+        return stmt.getColumnValue(1);
+    } catch(e) {
+        return "Error getting logs: " + e;
+    }
+$$;
+
+-- Refresh predictions procedure
+CREATE OR REPLACE PROCEDURE REFRESH_PREDICTIONS()
+RETURNS VARCHAR
+LANGUAGE JAVASCRIPT
+EXECUTE AS CALLER
+AS
+$$
+    var results = [];
+    var dbResult = snowflake.execute({sqlText: "SELECT CURRENT_DATABASE()"});
+    dbResult.next();
+    var dbName = dbResult.getColumnValue(1);
+    
+    try {
+        // Update prediction cache from ML view
+        snowflake.execute({sqlText: `
+            MERGE INTO ${dbName}.FTFP.PREDICTION_CACHE AS target
+            USING (
+                SELECT 
+                    ENTITY_ID,
+                    PREDICTION_TIMESTAMP,
+                    PREDICTED_FAILURE_TYPE,
+                    PREDICTED_HOURS_TO_FAILURE,
+                    TTF_MODEL_USED,
+                    CURRENT_ENGINE_TEMP,
+                    CURRENT_TRANS_PRESSURE,
+                    CURRENT_BATTERY_VOLTAGE
+                FROM ${dbName}.FTFP.ENHANCED_PREDICTIVE_VIEW_HYBRID_TTF
+            ) AS source
+            ON target.ENTITY_ID = source.ENTITY_ID
+            WHEN MATCHED THEN UPDATE SET
+                PREDICTION_TIMESTAMP = source.PREDICTION_TIMESTAMP,
+                PREDICTED_FAILURE_TYPE = source.PREDICTED_FAILURE_TYPE,
+                PREDICTED_HOURS_TO_FAILURE = source.PREDICTED_HOURS_TO_FAILURE,
+                TTF_MODEL_USED = source.TTF_MODEL_USED,
+                CURRENT_ENGINE_TEMP = source.CURRENT_ENGINE_TEMP,
+                CURRENT_TRANS_PRESSURE = source.CURRENT_TRANS_PRESSURE,
+                CURRENT_BATTERY_VOLTAGE = source.CURRENT_BATTERY_VOLTAGE,
+                LAST_UPDATED = CURRENT_TIMESTAMP()
+            WHEN NOT MATCHED THEN INSERT (
+                ENTITY_ID, PREDICTION_TIMESTAMP, PREDICTED_FAILURE_TYPE,
+                PREDICTED_HOURS_TO_FAILURE, TTF_MODEL_USED,
+                CURRENT_ENGINE_TEMP, CURRENT_TRANS_PRESSURE, CURRENT_BATTERY_VOLTAGE, LAST_UPDATED
+            ) VALUES (
+                source.ENTITY_ID, source.PREDICTION_TIMESTAMP, source.PREDICTED_FAILURE_TYPE,
+                source.PREDICTED_HOURS_TO_FAILURE, source.TTF_MODEL_USED,
+                source.CURRENT_ENGINE_TEMP, source.CURRENT_TRANS_PRESSURE, source.CURRENT_BATTERY_VOLTAGE, CURRENT_TIMESTAMP()
+            )
+        `});
+        results.push("✅ Prediction cache updated");
+        
+        // Count updated predictions
+        var cnt = snowflake.execute({sqlText: `SELECT COUNT(*) FROM ${dbName}.FTFP.PREDICTION_CACHE`});
+        cnt.next();
+        results.push("Predictions cached: " + cnt.getColumnValue(1));
+    } catch(e) {
+        results.push("Error: " + e);
+    }
+    
+    return results.join("\n");
+$$;
+
+-- Data status check procedure
+CREATE OR REPLACE PROCEDURE CHECK_DATA_STATUS()
+RETURNS VARCHAR
+LANGUAGE JAVASCRIPT
+EXECUTE AS CALLER
+AS
+$$
+    var results = [];
+    var dbResult = snowflake.execute({sqlText: "SELECT CURRENT_DATABASE()"});
+    dbResult.next();
+    var dbName = dbResult.getColumnValue(1);
+    
+    var tables = ['TELEMETRY', 'NORMAL_SEED', 'ENGINE_FAILURE_SEED', 
+                  'TRANSMISSION_FAILURE_SEED', 'ELECTRICAL_FAILURE_SEED',
+                  'STREAM_STATE', 'FAILURE_CONFIG', 'PREDICTION_CACHE'];
+    
+    results.push("=== Data Status ===");
+    for (var i = 0; i < tables.length; i++) {
+        try {
+            var stmt = snowflake.execute({sqlText: `SELECT COUNT(*) as c FROM ${dbName}.FTFP.${tables[i]}`});
+            stmt.next();
+            results.push(tables[i] + ": " + stmt.getColumnValue(1) + " rows");
+        } catch(e) {
+            results.push(tables[i] + ": Error - " + e);
+        }
+    }
+    
+    return results.join("\n");
+$$;
+
+SELECT '✅ Phase 12: Management procedures created' AS STATUS;
+
+-- ============================================================================
+-- DEPLOYMENT COMPLETE
+-- ============================================================================
+
+SELECT '============================================================================' AS SEPARATOR;
+SELECT '🎉 FTFP V1 DEPLOYMENT COMPLETE!' AS STATUS;
+SELECT '============================================================================' AS SEPARATOR;
+
+SELECT 'Database: ' || CURRENT_DATABASE() AS CREATED;
+SELECT 'Warehouse: ' || $WH_NAME AS CREATED;
+SELECT 'Compute Pool: ' || $POOL_NAME AS CREATED;
+
+SELECT '' AS SEPARATOR;
+SELECT '📋 NEXT STEPS:' AS INSTRUCTIONS;
+SELECT '1. Push Docker image to your registry (see URL above)' AS STEP;
+SELECT '2. Run: CALL ' || CURRENT_DATABASE() || '.FTFP.DEPLOY_SERVICE();' AS STEP;
+SELECT '3. Wait 2-3 minutes for service to start' AS STEP;
+SELECT '4. Run: CALL ' || CURRENT_DATABASE() || '.FTFP.CHECK_SERVICE_STATUS();' AS STEP;
+SELECT '' AS SEPARATOR;
+SELECT '📊 Useful commands:' AS HELP;
+SELECT '  CALL FTFP.CHECK_DATA_STATUS();      -- Check data tables' AS COMMAND;
+SELECT '  CALL FTFP.REFRESH_PREDICTIONS();    -- Update ML predictions' AS COMMAND;
+SELECT '  CALL FTFP.GET_SERVICE_LOGS();       -- View container logs' AS COMMAND;
+
