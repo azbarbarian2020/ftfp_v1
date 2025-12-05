@@ -120,14 +120,13 @@ USE SCHEMA IMAGES;
 
 CREATE IMAGE REPOSITORY IF NOT EXISTS FTFP_REPO COMMENT = 'FTFP container images';
 
-SHOW IMAGE REPOSITORIES IN SCHEMA IMAGES;
+SELECT '✅ Image repository created' AS STATUS;
 
-SELECT '📋 Image Repository URL (save for Docker push):' AS INFO;
-SELECT "repository_url" || '/ftfp_v1:v1' AS DOCKER_IMAGE_PATH
+-- Get and display repository URL for Docker push
+SHOW IMAGE REPOSITORIES IN SCHEMA IMAGES;
+SELECT '📋 DOCKER IMAGE PATH: ' || "repository_url" || '/ftfp_v1:v1' AS SAVE_THIS_FOR_DOCKER_PUSH
 FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()))
 WHERE "name" = 'FTFP_REPO';
-
-SELECT '✅ Image repository created' AS STATUS;
 
 -- ============================================================================
 -- STEP 5: CREATE SEED DATA STAGE
