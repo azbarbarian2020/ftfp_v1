@@ -237,24 +237,27 @@ ftfp_v1/
 │   ├── 01_INFRASTRUCTURE.sql          # Step 1: Create database, stages, compute pool
 │   ├── 02_LOAD_DATA_AND_DEPLOY.sql    # Step 3: Load data, create ML UDFs, views
 │   └── service_spec.yaml              # SPCS service specification
-├── seed_data/                         # Files to upload to Snowflake stages
-│   ├── NORMAL_SEED_FULL.csv.gz        # Normal telemetry (100K+ rows)
-│   ├── ENGINE_FAILURE_SEED.csv.gz     # Engine failure patterns
+├── seed_data/                         # ⬆️ Files to upload to Snowflake stages
+│   ├── NORMAL_SEED_FULL.csv.gz        # → @FTFP_V1.FTFP.SEED_STAGE (telemetry data)
+│   ├── ENGINE_FAILURE_SEED.csv.gz     # → @FTFP_V1.FTFP.SEED_STAGE
 │   ├── TRANSMISSION_FAILURE_SEED.csv.gz
 │   ├── ELECTRICAL_FAILURE_SEED.csv.gz
-│   ├── classifier_v1_0_0.pkl.gz       # XGBoost classifier model
-│   ├── regression_v1_0_0.pkl.gz       # TTF regression model
+│   ├── classifier_v1_0_0.pkl.gz       # → @FTFP_V1.ML.MODELS (XGBoost models)
+│   ├── regression_v1_0_0.pkl.gz       # → @FTFP_V1.ML.MODELS
 │   ├── regression_temporal_v1_1_0.pkl.gz
-│   └── (other .pkl.gz support files)
-├── backend/                           # For Docker image build
-│   ├── main.py                        # FastAPI application
-│   └── models/                        # ML models (copied into container)
+│   ├── label_mapping_v1_0_0.pkl.gz    # → @FTFP_V1.ML.MODELS
+│   ├── feature_columns_v1_0_0.pkl.gz  # → @FTFP_V1.ML.MODELS
+│   └── feature_columns_temporal_v1_1_0.pkl.gz
+├── backend/
+│   └── main.py                        # FastAPI application (for Docker image)
 ├── frontend/
 │   └── build/                         # Pre-built React application
 └── docker/
     ├── Dockerfile                     # Container build file
     └── requirements.txt               # Python dependencies
 ```
+
+**Note:** All ML models are in `seed_data/` and get uploaded to the `@FTFP_V1.ML.MODELS` Snowflake stage. The Snowflake Python UDFs load models from this stage. The Docker container does NOT contain the models.
 
 ---
 

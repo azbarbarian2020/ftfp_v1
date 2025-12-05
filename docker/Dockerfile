@@ -8,7 +8,9 @@
 # This image includes:
 #   - FastAPI backend with Snowflake connectivity
 #   - Pre-built React frontend
-#   - XGBoost ML models for real-time predictions
+#
+# Note: ML models are loaded by Snowflake Python UDFs from @FTFP_V1.ML.MODELS stage,
+#       not from this container.
 
 FROM python:3.10-slim
 
@@ -21,11 +23,8 @@ RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 COPY docker/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy backend code to /app (flat structure for imports)
+# Copy backend code
 COPY backend/*.py ./
-
-# Copy ML models to /app/models
-COPY backend/models/ ./models/
 
 # Copy frontend build for static serving
 COPY frontend/build/ ./frontend/build/
